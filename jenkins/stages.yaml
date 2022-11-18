@@ -1,0 +1,30 @@
+A:
+  env:
+    test: 2
+    test1: 1
+  steps:
+    - sh: "which python3"
+
+B:
+  when: 1 != 2
+  steps:
+    - sh: "echo $STAGE_NAME"
+
+C:
+  env:
+    test: C1
+    test1: C2
+  steps:
+    - sh: "echo $STAGE_NAME"
+
+
+D:
+  parallels:
+    - A
+    - {file: $HERE, name : B}
+    - {file: $HERE, name : C}
+
+start:
+  stages:
+    - D
+    - {file: jenkins/test.yml, name : C}
