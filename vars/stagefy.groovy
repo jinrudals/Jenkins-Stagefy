@@ -94,15 +94,31 @@ def loadStageInfo(filename, stage){
 def retrieveStageInfo(data){
   def name      = ""
   def filename  = ""
-  if(data.getClass() == String){
-    name = data
-    filename = "\$HERE"
-  }else{
-    name      = data["name"]
-    filename  = data["file"]
-  }
+  def doCommand = null
 
-  return [name, filename]
+  if(data.getClass() == String){
+    if(data.contains("from")){
+      xx = data.split("from")
+      name = xx[0].trim()
+      filename = xx[1].trim()
+    }else {
+      name = data
+      filename = "\$HERE"
+    }
+  }else {
+    name = data["name"]
+    filename = data["file"]
+  }
+  // if(data.getClass() == String && !data.contains("from")){
+  //   name = data
+  //   filename = "\$HERE"
+  // }else{
+  //   name      = data["name"]
+  //   filename  = data["file"]
+  //   doCommand = data["before"]
+  // }
+
+  return [name, filename, doCommand]
 }
 def getData(name, currentfile, loadedStage = [:]){
   def key = "${currentfile}::${name}"
@@ -123,14 +139,22 @@ def getData(name, currentfile, loadedStage = [:]){
       tpe = "stages"
       def data = []
       for(each in stageInfo["stages"]){
-        // def newData     = retrieveStageInfo(formalData)
-        // def newname     = newData[0]
-        // def newfilename = newData[1]
-        (newname, newfilename) = retrieveStageInfo(each)
+        (newname, newfilename, doCommand) = retrieveStageInfo(each)
+        if(doCommand != null) {
+          sh "${doCommand}"
+        }
         if(newfilename == "\$HERE"){
           newfilename = currentfile
         }
-        (loadedStage, dd) = getData(newname, newfilename, loadedStage)
+
+        if (currentfile != newfilename) {
+          dd = {
+            (loadedStage, dd) = getData(newname, newfilename, loadedStage)
+            dd()
+          }
+        }else {
+          (loadedStage, dd) = getData(newname, newfilename, loadedStage)
+        }
         data.add(dd)
       }
       outstage.add(getSequentialStages(name, data))
@@ -138,15 +162,22 @@ def getData(name, currentfile, loadedStage = [:]){
       tpe = "parallels"
       def data1 = [:]
       for(each in stageInfo["parallels"]){
-        // def formalData  = each
-        // def newData     = retrieveStageInfo(formalData)
-        // def newname     = newData[0]
-        // def newfilename = newData[1]
-        (newname, newfilename) = retrieveStageInfo(each)
+        (newname, newfilename, doCommand) = retrieveStageInfo(each)
+        if(doCommand != null) {
+          sh "${doCommand}"
+        }
         if(newfilename == "\$HERE"){
           newfilename = currentfile
         }
-        (loadedStage, dd) = getData(newname, newfilename, loadedStage)
+
+        if (currentfile != newfilename) {
+          dd = {
+            (loadedStage, dd) = getData(newname, newfilename, loadedStage)
+            dd()
+          }
+        }else {
+          (loadedStage, dd) = getData(newname, newfilename, loadedStage)
+        }
         data1[newname] = dd
       }
       outstage.add(getParallelStages(name, data1))
@@ -160,5 +191,3 @@ def getData(name, currentfile, loadedStage = [:]){
   }
   return [loadedStage, outstage[0]]
 }
-
-return this
