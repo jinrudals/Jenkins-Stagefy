@@ -1,193 +1,229 @@
-def singleStage(name, data){
-  def pattern = /\$\{\s*env\.[a-z|A-Z|_|\.]*\s*\}*/
-  def envData = data["env"]
-  def nodeData = data["node"]
-  def contents = []
-  def moduleprefix = ""
-  if(data["modules"] != null ){
-    def joined = data["modules"].join(" ")
-    moduleprefix = "set +x; source \$MODULESHOME/init/zsh 2>/dev/null 1>/dev/null; module load ${joined}; set -x;"
+/*
+Load Jenkins stages from YAML.
+Need to support followings
+  - load stage from other file
+  - load stage dynamically
+*/
+import org.jenkinsci.plugins.pipeline.modeldefinition.Utils
+
+import groovy.transform.InheritConstructors
+import groovy.json.JsonSlurper
+
+class Stagefy {
+  String filename
+  String stagename
+  Object script
+  def parent
+  Stagefy(filename, stagename, parent, script){
+    this.filename = filename
+    this.stagename = stagename
+    this.script = script
+    this.parent = parent
   }
-  def content = {
-    stage(name){
-      for(each in data["steps"]){
-        if(each.containsKey("sh")){
-          def s_shell = each['sh']
-          def envList = [:]
-          for(eachEnv in s_shell.findAll(pattern)){
-            temp = eachEnv.split("env.")[-1].replace("}","").trim()
-            envList[eachEnv] = env[temp]
+  def load_data(String filename, String stagename){
+    return this.script.load_data(filename, stagename)
+  }
+  public def steps_run(){
+    def data = load_data(this.filename, this.stagename)
+    def pattern = /\$\{\s*env\.[a-z|A-Z|_|\.]*\s*\}*/
+    def envData = data["env"]
+    def nodeData = data["node"]
+    def contents = []
+    def moduleprefix = ""
+    if(data["modules"] != null ){
+      def joined = data["modules"].join(" ")
+      moduleprefix = "set +x; source \$MODULESHOME/init/zsh 2>/dev/null 1>/dev/null; module load ${joined}; set -x;"
+    }
+    def content = {
+      // If parent is parallel, the stage is created
+      // if(this.parent != null && this.parent.tpe == "parallels") {
+        for(each in data["steps"]){
+          if(each.containsKey("sh")){
+            def s_shell = each['sh']
+            def envList = [:]
+            for(eachEnv in s_shell.findAll(pattern)){
+              def temp = eachEnv.split("env.")[-1].replace("}","").trim()
+              envList[eachEnv] = this.script.env[temp]
+            }
+            for(eachKey in envList.keySet()){
+              s_shell = s_shell.replace(eachKey, envList[eachKey])
+            }
+            def finaloutput = "${moduleprefix}${s_shell}"
+            this.script.sh(finaloutput)
+          }else if(each.containsKey("script")){
+            def scriptFile = each["script"]
+            this.sript.load(scriptFile).main()
+          }else if(each.containsKey("setEnvFromFile")){
+            this.script.setEnvFromFile(each["setEnvFromFile"])
           }
-          for(eachKey in envList.keySet()){
-            s_shell = s_shell.replace(eachKey, envList[eachKey])
-          }
-          def finaloutput = "${moduleprefix}${s_shell}"
-          sh(finaloutput)
-        }else if(each.containsKey("script")){
-          def scriptFile = each["script"]
-          load(scriptFile).main()
+        }
+    }
+    contents.add(content)
+
+
+    if(envData != null){
+      def envDataList = []
+      def currentContent = contents[-1]
+      for(each in envData.keySet()){
+        envDataList.add("${each}=${envData[each]}")
+      }
+      contents.add({
+        this.script.withEnv(envDataList){
+          currentContent()
+        }
+      })
+    }
+
+
+    if(nodeData != null){
+      def currentContent = contents[-1]
+      contents.add({
+        this.script.node("${nodeData}"){
+          currentContent()
+        }
+      })
+    }
+
+    contents[-1]()
+  }
+
+  public def parallels_run(){
+    def temp = load_data(this.filename, this.stagename)['parallels']
+    def data = [:]
+    for(each in temp){
+      def nextFile = "\$HERE"
+      def nextStage = each
+
+      if(each.contains("from")){
+        def splitted = each.split("from")
+        nextStage = splitted[0].trim()
+        nextFile = splitted[1].trim()
+      }
+      if(nextFile == "\$HERE"){
+        nextFile = this.filename
+      }
+      data[nextStage] = {
+        this.script.stage(nextStage){
+          this.construct_stage(nextFile, nextStage).run()
+        }
+
+      }
+
+
+    }
+    this.script.parallel data
+  }
+
+  public def stages_run(script) {
+
+    println("DEBUGGING :::: ")
+    def temp = this.script.load_data(this.filename, this.stagename)['stages']
+    println(temp)
+    def inside = []
+    for(each in temp){
+      def nextFile = "\$HERE"
+      def nextStage = each
+      if(each.contains("from")){
+        def splitted = each.split("from")
+        nextStage = splitted[0].trim()
+        nextFile = splitted[1].trim()
+      }
+      if(nextFile == "\$HERE"){
+        nextFile = this.filename
+      }
+      inside.add(this.construct_stage(nextFile, nextStage))
+    }
+
+    println(inside)
+    this.script.sh("echo ${this.stagename} from ${this.filename}")
+      for(each in inside){
+        this.script.stage(each.stagename){
+          each.run()
         }
       }
+  }
+  def construct_stage(String filename, String stagename) {
+    return this.getClass().newInstance(filename, stagename, this, this.script)
+  }
+
+  def check_circular_loop(other){
+    if (this.parent == null){
+      return true
+    }else {
+
+      if(this.parent.filename == other.filename && this.parent.stagename == other.stagename){
+        throw new Exception("Circular Loop Execution ${this.stagename} from ${other.filename}")
+      }else{
+        this.parent.check_circular_loop(other)
+      }
     }
   }
-  contents.add(content)
-
-
-  if(envData != null){
-    def envDataList = []
-    def currentContent = contents[-1]
-    for(each in envData.keySet()){
-      envDataList.add("${each}=${envData[each]}")
+  public def run(){
+    def temp = this.load_data(this.filename, this.stagename)
+    def whenData = temp["when"]
+    this.script.echo("DEBUG POINT #1")
+    this.script.echo("Before data :: ${whenData}")
+    if(whenData == null){
+      whenData = true
+    } else {
+      whenData = this.script.evaluation(whenData)
     }
-    contents.add({
-      withEnv(envDataList){
-        currentContent()
+    this.script.echo("After data :: ${whenData}")
+    if(whenData){
+      if(temp.stages != null){
+        this.check_circular_loop(this)
+        return this.stages_run()
       }
-    })
-  }
-
-
-  if(nodeData != null){
-    def currentContent = contents[-1]
-    contents.add({
-      node("${nodeData}"){
-        currentContent()
+      else if(temp.parallels != null){
+        this.check_circular_loop(this)
+        return this.parallels_run()
       }
-    })
+      else if(temp.steps != null){
+        return this.steps_run()
+      }
+      else {
+        this.script.error('No matching type')
+      }
+    }else [
+      Utils.markStageSkippedForConditional(this.stagename)
+    ]
   }
-
-  return contents[-1]
 }
 
-def getParallelStages(name, ss) {
+def run_parallels(name, ss){
   return {
-    stage(name){
+    stage(name) {
       try {
-        parallel  ss
-      } catch (e) {
+        parallel ss
+      } catch(e) {
         throw e
       }
     }
   }
 }
 
-def getSequentialStages(name, ss){
-  return {
-    stage(name){
-      try {
-        for (each in ss) {
-          each()
-        }
-      } catch (e) {
-        throw e
-      }
+def evaluation(value){
+  return evaluate(value)
+}
+def load_data(String filename, String stagename){
+  return readYaml(file : filename)[stagename]
+}
+
+def construct_stage(String filename, String stagename){
+  return new Stagefy(filename, stagename, null, this)
+}
+
+def setEnvFromFile(filename){
+  def temp = readYaml(file : filename)
+  if(temp.env != null){
+    for (each in temp.env.keySet()){
+      env.setProperty(each, temp.env[each])
     }
   }
 }
-
-
-def loadStageInfo(filename, stage){
-  def tmp = readYaml(file: filename)
-  return tmp[stage]
-}
-@NonCPS
-def retrieveStageInfo(data){
-  def name      = ""
-  def filename  = ""
-  def doCommand = null
-
-  if(data.getClass() == String){
-    if(data.contains("from")){
-      xx = data.split("from")
-      name = xx[0].trim()
-      filename = xx[1].trim()
-    }else {
-      name = data
-      filename = "\$HERE"
-    }
-  }else {
-    name = data["name"]
-    filename = data["file"]
+def run(filename, stagename){
+  def temp = construct_stage(filename, stagename)
+  stage(stagename){
+    temp.run()
   }
-  // if(data.getClass() == String && !data.contains("from")){
-  //   name = data
-  //   filename = "\$HERE"
-  // }else{
-  //   name      = data["name"]
-  //   filename  = data["file"]
-  //   doCommand = data["before"]
-  // }
-
-  return [name, filename, doCommand]
-}
-def getData(name, currentfile, loadedStage = [:]){
-  def key = "${currentfile}::${name}"
-
-  def outstage = []
-
-  if (loadedStage[key] != null ){
-    if(loadedStage[key].type != "steps"){
-      error("Circular Stage maded for ${key} check :: ${loadedStage[key]}")
-    }else {
-      return  [loadedStage, loadedStage[key].stage[0]]
-    }
-  }
-  else {
-    def stageInfo = loadStageInfo(currentfile, name)
-    def tpe = "null"
-    if (stageInfo.stages != null){
-      tpe = "stages"
-      def data = []
-      for(each in stageInfo["stages"]){
-        (newname, newfilename, doCommand) = retrieveStageInfo(each)
-        if(doCommand != null) {
-          sh "${doCommand}"
-        }
-        if(newfilename == "\$HERE"){
-          newfilename = currentfile
-        }
-
-        if (currentfile != newfilename) {
-          dd = {
-            (loadedStage, dd) = getData(newname, newfilename, loadedStage)
-            dd()
-          }
-        }else {
-          (loadedStage, dd) = getData(newname, newfilename, loadedStage)
-        }
-        data.add(dd)
-      }
-      outstage.add(getSequentialStages(name, data))
-    }else if(stageInfo.parallels != null){
-      tpe = "parallels"
-      def data1 = [:]
-      for(each in stageInfo["parallels"]){
-        (newname, newfilename, doCommand) = retrieveStageInfo(each)
-        if(doCommand != null) {
-          sh "${doCommand}"
-        }
-        if(newfilename == "\$HERE"){
-          newfilename = currentfile
-        }
-
-        if (currentfile != newfilename) {
-          dd = {
-            (loadedStage, dd) = getData(newname, newfilename, loadedStage)
-            dd()
-          }
-        }else {
-          (loadedStage, dd) = getData(newname, newfilename, loadedStage)
-        }
-        data1[newname] = dd
-      }
-      outstage.add(getParallelStages(name, data1))
-    }else if(stageInfo.steps != null){
-      tpe = "steps"
-      outstage.add(singleStage(name, stageInfo))
-    }else {
-      error("Stage[${key}] must contains one of [stages, parallels, steps]")
-    }
-    loadedStage[key] = [type:tpe, stage:outstage]
-  }
-  return [loadedStage, outstage[0]]
 }
