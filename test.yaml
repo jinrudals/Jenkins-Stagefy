@@ -1,0 +1,17 @@
+start:
+  stages:
+    - A
+    - B
+
+A:
+  steps:
+    - sh: echo "Hello World"
+
+B:
+  parallels:
+    - A
+    - C
+
+C:
+  steps:
+    - sh: echo "Stage C"
