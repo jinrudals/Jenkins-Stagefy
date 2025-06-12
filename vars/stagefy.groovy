@@ -1,237 +1,182 @@
 /*
-Load Jenkins stages from YAML.
-Need to support followings
-  - load stage from other file
-  - load stage dynamically
-*/
-import org.jenkinsci.plugins.pipeline.modeldefinition.Utils
+ * Groovy Library for loading Jenkins stages from YAML.
+ * Supports:
+ *  - Loading stages from external YAML files
+ *  - Dynamic stage composition (parallel, sequential, single)
+ *  - Stage skipping logic via "when"
+ *  - Environment and node scoping
+ */
 
+import org.jenkinsci.plugins.pipeline.modeldefinition.Utils
 import groovy.transform.InheritConstructors
 import groovy.json.JsonSlurper
 
 class Stagefy {
-  String filename           // file of stage
-  String stagename          // name of stage
-  Object script             // wrapper to use global jenkins functions
-  boolean flag              // flag of stage. If true, execute the stage, else do not not single stage
-  def parent                // parent of current stage
-  Stagefy(filename, stagename, parent, script){
+  String filename
+  String stagename
+  Object script
+  boolean flag = true
+  def parent
+
+  Stagefy(String filename, String stagename, parent, script) {
     this.filename = filename
     this.stagename = stagename
-    this.script = script
-    this.flag   = true
     this.parent = parent
+    this.script = script
   }
-  // load stage data from file
-  def load_data(String filename, String stagename){
+
+  def load_data(String filename, String stagename) {
     return this.script.load_data(filename, stagename)
   }
 
-  // single stage run wrapper
-  public def steps_run(){
-    def data = load_data(this.filename, this.stagename)
-    def pattern = /\$\{\s*env\.[a-z|A-Z|_|\.]*\s*\}*/
+  def steps_run() {
+    def data = load_data(filename, stagename)
     def envData = data["env"]
     def nodeData = data["node"]
-    def contents = []
-    def moduleprefix = ""
-    if(data["modules"] != null ){
-      def joined = data["modules"].join(" ")
-      moduleprefix = "set +x; source \$MODULESHOME/init/zsh 2>/dev/null 1>/dev/null; module load ${joined}; set -x;"
-    }
+    def steps = data["steps"] ?: []
+
     def content = {
-      // If parent is parallel, the stage is created
-        for(each in data["steps"]){
-          if(each.containsKey("sh")){
-            def s_shell = each['sh']
-            def envList = [:]
-            for(eachEnv in s_shell.findAll(pattern)){
-              def temp = eachEnv.split("env.")[-1].replace("}","").trim()
-              envList[eachEnv] = this.script.env[temp]
-            }
-            for(eachKey in envList.keySet()){
-              s_shell = s_shell.replace(eachKey, envList[eachKey])
-            }
-            def finaloutput = "${moduleprefix}${s_shell}"
-            this.script.sh(finaloutput)
-          }else if(each.containsKey("script")){
-            def scriptFile = each["script"]
-            this.script.load(scriptFile).main()
-          }else if(each.containsKey("setEnvFromFile")){
-            this.script.setEnvFromFile(each["setEnvFromFile"])
-          }else if(each.containsKey("evaluate")){
-            this.script.evaluation(each["evaluate"])
+      for (step in steps) {
+        if (step.sh) {
+          def shell = step.sh
+          shell = shell.replaceAll(/\$\{\s*env\.([a-zA-Z0-9_\.]+)\s*\}/) { _, var ->
+            return this.script.env.getProperty(var)
           }
+          this.script.sh(shell)
+
+        } else if (step.script) {
+          this.script.load(step.script).main()
+
+        } else if (step.setEnvFromFile) {
+          this.script.setEnvFromFile(step.setEnvFromFile)
+
+        } else if (step.evaluate) {
+          this.script.evaluation(step.evaluate)
         }
-    }
-    contents.add(content)
-
-
-    if(envData != null){
-      def envDataList = []
-      def currentContent = contents[-1]
-      for(each in envData.keySet()){
-        envDataList.add("${each}=${envData[each]}")
       }
-      contents.add({
-        this.script.withEnv(envDataList){
-          currentContent()
+    }
+
+    def wrapped = content
+    if (envData) {
+      wrapped = {
+        this.script.withEnv(envData.collect { k, v -> "${k}=${v}" }) {
+          content()
         }
-      })
+      }
     }
 
-
-    if(nodeData != null){
-      def currentContent = contents[-1]
-      contents.add({
-        this.script.node("${nodeData}"){
-          currentContent()
+    if (nodeData) {
+      def current = wrapped
+      wrapped = {
+        this.script.node(nodeData) {
+          current()
         }
-      })
-    }
-    if(this.flag){
-      contents[-1]()
-    }
-  }
-  // parallel stage run wrapper
-  public def parallels_run(){
-    def temp = load_data(this.filename, this.stagename)['parallels']
-    def data = [:]
-    for(each in temp){
-      def nextFile = "\$HERE"
-      def nextStage = each
-
-      if(each.contains("from")){
-        def splitted = each.split("from")
-        nextStage = splitted[0].trim()
-        nextFile = splitted[1].trim()
       }
-      if(nextFile == "\$HERE"){
-        nextFile = this.filename
-      }
-      data[nextStage] = {
-        this.script.stage(nextStage){
-          this.construct_stage(nextFile, nextStage).run()
-        }
-
-      }
-
-
     }
-    this.script.parallel data
+
+    if (flag) wrapped()
   }
 
-  // sequentail stage run wrapper
-  public def stages_run(script) {
+  def parallels_run() {
+    def parallels = load_data(filename, stagename)["parallels"] ?: []
+    def branches = [:]
 
-    def temp = this.script.load_data(this.filename, this.stagename)['stages']
-    def inside = []
-    for(each in temp){
-      def nextFile = "\$HERE"
-      def nextStage = each
-      if(each.contains("from")){
-        def splitted = each.split("from")
-        nextStage = splitted[0].trim()
-        nextFile = splitted[1].trim()
+    for (entry in parallels) {
+      def nextStage = entry
+      def nextFile = filename
+
+      if (entry.contains("from")) {
+        def (stageName, fileName) = entry.split("from").collect { it.trim() }
+        nextStage = stageName
+        nextFile = fileName
       }
-      if(nextFile == "\$HERE"){
-        nextFile = this.filename
-      }
-      inside.add(this.construct_stage(nextFile, nextStage))
-    }
 
-
-      for(each in inside){
-        this.script.stage(each.stagename){
-          each.run()
+      branches[nextStage] = {
+        this.script.stage(nextStage) {
+          construct_stage(nextFile, nextStage).run()
         }
       }
+    }
+    this.script.parallel branches
   }
 
-  // construct child stage instance
+  def stages_run() {
+    def stages = load_data(filename, stagename)["stages"] ?: []
+    for (entry in stages) {
+      def nextStage = entry
+      def nextFile = filename
+
+      if (entry.contains("from")) {
+        def (stageName, fileName) = entry.split("from").collect { it.trim() }
+        nextStage = stageName
+        nextFile = fileName
+      }
+
+      def child = construct_stage(nextFile, nextStage)
+      this.script.stage(nextStage) {
+        child.run()
+      }
+    }
+  }
+
   def construct_stage(String filename, String stagename) {
-    return this.getClass().newInstance(filename, stagename, this, this.script)
+    return this.getClass().newInstance(filename, stagename, this, script)
   }
 
-  // check circluar loop
-  def check_circular_loop(other){
-    // if no parent, it is passed
-    if (this.parent == null){
-      return true
-    }else {
-      /*
-        When the parent and other are from the same file and have same stage name,
-        it is circular loop
-      */
-      if(this.parent.filename == other.filename && this.parent.stagename == other.stagename){
-        throw new Exception("Circular Loop Execution ${this.stagename} from ${other.filename}")
-      }else{
-        // Check with current parent tree
-        this.parent.check_circular_loop(other)
-      }
+  def check_circular_loop(Stagefy other) {
+    if (parent == null) return
+    if (parent.filename == other.filename && parent.stagename == other.stagename) {
+      throw new IllegalStateException("Circular Loop Detected: ${stagename} from ${filename}")
     }
+    parent.check_circular_loop(other)
   }
-  public def run(){
-    def temp = this.load_data(this.filename, this.stagename)
-    def whenData = temp["when"]
-    // If when data is empty, it is true by default
-    if(whenData == null){
-      whenData = true
-    } else {
-      // otherwise, evaluate the string value
-      whenData = this.script.evaluation(whenData)
-    }
-    this.flag = whenData
-    // If parent exists, check the parent skip condition
-    if(this.parent != null){
-      this.flag = this.parent.flag && this.flag
-    }
-    // If skipped condition, mark jenkins stage as skipped
-    if(!this.flag){
-      Utils.markStageSkippedForConditional(this.stagename)
-    }
-    // Run each type
-    if(temp.stages != null){
-      this.check_circular_loop(this)
-      return this.stages_run()
-    }
-    else if(temp.parallels != null){
-      this.check_circular_loop(this)
-      return this.parallels_run()
-    }
-    else if(temp.steps != null){
-      return this.steps_run()
-    }
-    else {
-      this.script.error('No matching type')
+
+  def run() {
+    def data = load_data(filename, stagename)
+    def whenCondition = data["when"]
+
+    flag = whenCondition == null ? true : script.evaluation(whenCondition)
+    if (parent) flag = parent.flag && flag
+
+    if (!flag) {
+      Utils.markStageSkippedForConditional(stagename)
+      return
     }
 
+    check_circular_loop(this)
+
+    if (data.stages)      return stages_run()
+    if (data.parallels)   return parallels_run()
+    if (data.steps)       return steps_run()
+
+    script.error("Stage '${stagename}' has no valid execution type (stages/steps/parallels)")
   }
 }
 
-// wrapper for evaluation
-def evaluation(value){
-  return evaluate(value)
-}
-def load_data(String filename, String stagename){
-  return readYaml(file : filename)[stagename]
+// Helper functions for Jenkins global usage
+
+def evaluation(String expr) {
+  return evaluate(expr)
 }
 
-def construct_stage(String filename, String stagename){
-  return new Stagefy(filename, stagename, null, this)
+def load_data(String file, String stage) {
+  return readYaml(file: file)[stage]
 }
 
-def setEnvFromFile(filename){
-  def temp = readYaml(file : filename)
-  if(temp.env != null){
-    for (each in temp.env.keySet()){
-      env.setProperty(each, temp.env[each])
-    }
+def setEnvFromFile(String file) {
+  def envs = readYaml(file: file)["env"]
+  if (envs) {
+    envs.each { k, v -> env.setProperty(k, v) }
   }
 }
-def run(filename, stagename){
-  def temp = construct_stage(filename, stagename)
-  stage(stagename){
-    temp.run()
+
+def construct_stage(String file, String stage) {
+  return new Stagefy(file, stage, null, this)
+}
+
+def run(String file, String stage) {
+  def instance = construct_stage(file, stage)
+  stage(stage) {
+    instance.run()
   }
 }
