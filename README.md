@@ -102,3 +102,6 @@ pipeline {
 This library constructs the details of each stage at runtime, which allows dynamic behavior.
 
 For example, a previous stage might generate a new YAML file that subsequent stages can load and execute.
+
+## TODO
+- [ ] The current library requires many Jenkins settings; hence I am planning to develop a Jenkins plugin.
