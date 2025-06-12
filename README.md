@@ -1,57 +1,103 @@
 # Jenkins Stagefy
 
-Jenkins can only run one Jenkinsfile per Item(Job). This leads to multiple jobs, and integrate with GitLab per repository.
+## Introduction
+Modern CI/CD tools like GitHub Actions and GitLab CI/CD describe pipelines using YAML files.
+This approach makes it easy for engineers—regardless of their familiarity with the CI/CD tool’s internals—to write and share pipelines across projects.
 
-Moreover, some repositories need to run the same `stage`. With current Jenkins flow, a job needs to build child jobs, to achieve this goal. Otherwise, we need to copy-and-paste the stage.
+However, Jenkins requires pipelines to be written in Jenkins DSL, which introduces several inconveniences:
 
-In addition, the one who writes Jenkinsfile should always understand the whole stage flows for all repositories (or items / jobs). In contrast, the project manager may not understand Jenkins itself (even though it is quite easy to learn).
+Engineers often avoid writing pipelines themselves; instead, the Jenkins administrator writes them, even though the DSL is relatively simple.
 
-One last thing: we cannot run the Jenkins script locally.
+Jenkins pipelines (especially stages) are not easily reusable across projects.
 
-## Let's Write Stage understantable for all users!
+To address these issues, I developed a simple Groovy-based solution that allows Jenkins stages to be defined in YAML format and invoked within Jenkins pipeline jobs. This makes pipelines more modular, reusable, and easier for all team members to contribute to.
+---
 
-Jenkins `Stage` can be categorized in three types.
-
-- Stage that runs other stages sequentially
-- Stage that runs other stages parallely
-- Stage that runs shell script
-
-The last category is quite easy for all engineers. However, for the above two, users need to understande Jenkins. But what if we describe as below?
-
+## YAML structure
 ```yaml
-StageA:
+build:
   stages:
-    - A
-    - B
-    - C
+    - compile
+    - test
+    - package
 
-StageB:
+test:
   parallels:
-    - D
-    - E
-    - F
+    - unitTest
+    - integrationTest
 
-StageC:
+deploy:
   steps:
-    - sh : "command"
+    - sh: ./scripts/deploy.sh
+    - script: groovy/deploy.groovy
+    - evaluate: |
+        echo "Custom DSL"
+        retry(3) {
+            sh "curl http://example.com"
+        }
 ```
+### Stage Types
+There are three types of stages supported:
 
-Isn't it quite straight forward for understanding?
-`StageA` runs child stages sequentially, whereas `StageB` runs them parallely. `StageC` doesn't have child stages, runs it's own command list.
+- Sequential Stage (stages)
+    
+    A structural stage that aggregates other stages and runs them in sequence.
 
-Moreover, when make shared stage as child, we can call as below:
+- Parallel Stage (parallels)
+
+    A structural stage that aggregates other stages and runs them in parallel.
+
+- Single Stage (steps)
+
+    An executable stage that includes one or more steps, such as:
+
+    - sh: a shell command
+
+    - script: a reference to an external Groovy script file
+
+    - evaluate: an inline Jenkins Pipeline DSL block
+
+## Stage Reusability
 ```yaml
-StageD:
-  stages:
-    - {name : C, file: "path/to/other/yaml"}
+stageName:
+    stages:
+        - stageA        # stage that gets other.yaml
+        - stageB from other.yaml
 ```
+You can also import stages from other YAML files using the from keyword.
+This enables cross-project stage sharing, improving reusability and consistency across pipelines.
 
-The last thing: We can parse this yaml data into python or other script to run the script locally.
+> **Planned Feature**:
+>
+> Support for loading stages directly from a remote URL, without requiring prior local definition.
 
-# How it works
+---
+## How to
 ```groovy
-def getData(name, currentfile, loadedStage = [:]){
+// load library
 
+node() {
+    library.run("jenkins.yaml", "start-point")
 }
 ```
-We parse the start stage name and file. If the start stage is `step` type, it returns the stage itself. Otherwise, it find child stage information.
+OR
+```groovy
+// load library
+pipeline {
+    agent any
+
+    stages{
+        stage("init") {
+            steps {
+                script{
+                    library.run("jenkins.yaml", "start")
+                }
+            }
+        }
+    }
+}
+```
+
+This library constructs the details of each stage at runtime, which allows dynamic behavior.
+
+For example, a previous stage might generate a new YAML file that subsequent stages can load and execute.
