@@ -1,3 +1,0 @@
-prepare:
-  steps:
-    - sh : "git clone ..."
