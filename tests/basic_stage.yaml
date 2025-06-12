@@ -1,0 +1,18 @@
+entry:
+  stages:
+    - prepare
+    - compile
+    - build
+    - test
+    - report
+
+prepare:
+  steps:
+    - sh: git clone
+    - sh: python3 -m venv env
+    - sh: source env/bin/active; pip3 install -r requirements.txt
+
+compile:
+  parallels:
+    - c_compile
+    - others
