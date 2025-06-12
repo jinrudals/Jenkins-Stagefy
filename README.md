@@ -11,6 +11,7 @@ Engineers often avoid writing pipelines themselves; instead, the Jenkins adminis
 Jenkins pipelines (especially stages) are not easily reusable across projects.
 
 To address these issues, I developed a simple Groovy-based solution that allows Jenkins stages to be defined in YAML format and invoked within Jenkins pipeline jobs. This makes pipelines more modular, reusable, and easier for all team members to contribute to.
+
 ---
 
 ## YAML structure
