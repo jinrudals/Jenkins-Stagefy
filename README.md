@@ -105,3 +105,6 @@ For example, a previous stage might generate a new YAML file that subsequent sta
 
 ## TODO
 - [ ] The current library requires many Jenkins settings; hence I am planning to develop a Jenkins plugin.
+
+## More
+[Easy GitLab Integration](GitLab.md)
