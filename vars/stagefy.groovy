@@ -1,22 +1,23 @@
 /*
-Load Jenkins stages from YAML.
-OOP refactored architecture:
-  - Stage layer: StepsStage, SequentialStage, ParallelStage
-  - Step layer: ShStep, ScriptStep, UseStageStep, TemplateStep, IteratedStep, etc.
-  - Template system with recursive variable substitution (depth limit 5)
-  - JenkinsContext adapter for all DSL calls
-  - DEBUG_LEVEL env var for execution tracing (0=silent, 1=stage, 2=step)
+YAML 기반 Jenkins 스테이지 로더.
+OOP 리팩토링 아키텍처:
+  - 스테이지 계층: StepsStage, SequentialStage, ParallelStage
+  - 스텝 계층: ShStep, ScriptStep, UseStageStep 등
+  - 템플릿 시스템: 재귀 변수 치환 (깊이 제한 5)
+  - JenkinsContext 어댑터: 모든 DSL 호출 래핑
+  - DEBUG_LEVEL 환경 변수: 실행 추적 로깅 (debug/info/warn/error)
 */
 import org.jenkinsci.plugins.pipeline.modeldefinition.Utils
 import groovy.json.JsonSlurper
 
 // ============================================================================
-// Jenkins Adapter
+// Jenkins 어댑터
 // ============================================================================
 
 /**
- * Wraps all Jenkins pipeline DSL calls. Enables testing and abstraction.
- * Serializable for CPS compatibility — stored in Stage/Step fields across closures.
+ * Jenkins 파이프라인 DSL 호출을 래핑하는 어댑터.
+ * 테스트 및 추상화를 위해 모든 DSL 호출을 중앙 집중화.
+ * CPS 호환을 위해 Serializable 구현.
  */
 class JenkinsContext implements Serializable {
   def script
@@ -57,10 +58,10 @@ class JenkinsContext implements Serializable {
 }
 
 // ============================================================================
-// Utility Classes (@NonCPS stateless helpers)
+// 유틸리티 클래스 (@NonCPS 무상태 헬퍼)
 // ============================================================================
 
-/** Resolves ${env.VAR} patterns in text. */
+/** 텍스트 내 ${env.VAR} 패턴을 환경 변수 값으로 치환. */
 class EnvResolver implements Serializable {
   @NonCPS
   static List extractEnvKeys(String text) {
@@ -84,7 +85,7 @@ class EnvResolver implements Serializable {
   }
 }
 
-/** Builds module load prefix for shell commands. */
+/** 셸 명령어에 module load 접두사를 생성. */
 class ModuleResolver implements Serializable {
   @NonCPS
   static String buildPrefix(List modules) {
@@ -94,7 +95,7 @@ class ModuleResolver implements Serializable {
   }
 }
 
-/** Generates unique, sanitized Jenkins stage names. */
+/** 고유하고 안전한 Jenkins 스테이지 이름을 생성. */
 class StageNameBuilder implements Serializable {
   @NonCPS
   static String sanitize(String name) {
@@ -127,8 +128,8 @@ class StageNameBuilder implements Serializable {
 }
 
 /**
- * Recursive {ARG_NAME} substitution with depth limit of 5.
- * Loops until no tokens remain or depth exhausted.
+ * {ARG_NAME} 재귀 치환 (깊이 제한 5).
+ * 토큰이 남지 않거나 깊이 초과 시 중단.
  */
 class TemplateResolver implements Serializable {
   @NonCPS
@@ -163,7 +164,7 @@ class TemplateResolver implements Serializable {
   }
 }
 
-/** Expands over: directives into iteration lists. */
+/** over: 디렉티브를 반복 리스트로 확장. */
 class IterationResolver implements Serializable {
   static List expandOver(def over, JenkinsContext jenkins, String stagename) {
     if (over instanceof List) return new ArrayList(over)
@@ -216,10 +217,10 @@ class IterationResolver implements Serializable {
 }
 
 // ============================================================================
-// Template
+// 템플릿
 // ============================================================================
 
-/** Represents a reusable template stage with argument declarations and validation. */
+/** 인자 선언과 검증을 포함하는 재사용 가능한 템플릿 스테이지. */
 class Template implements Serializable {
   String name
   String filename
@@ -258,12 +259,12 @@ class Template implements Serializable {
 }
 
 // ============================================================================
-// Stage Layer
+// 스테이지 계층
 // ============================================================================
 
 /**
- * Abstract base for all executable stages. Serializable for CPS.
- * Handles: YAML loading, when: evaluation, parent flag propagation, circular loop detection.
+ * 모든 실행 가능한 스테이지의 추상 기반 클래스. CPS 호환을 위해 Serializable.
+ * YAML 로딩, when: 평가, 부모 플래그 전파, 순환 참조 감지를 처리.
  */
 abstract class Stage implements Serializable {
   String filename
@@ -288,7 +289,7 @@ abstract class Stage implements Serializable {
     this.parent.checkCircularLoop(other)
   }
 
-  /** Main entry: load data, evaluate when, dispatch to subclass. */
+  /** 메인 진입점: 데이터 로드, when 평가, 서브클래스로 디스패치. */
   public def run() {
     def data = load()
     if (data != null && data.template != null) {
@@ -305,16 +306,16 @@ abstract class Stage implements Serializable {
     return result
   }
 
-  /** Subclass-specific execution. */
+  /** 서브클래스별 실행 로직. */
   abstract def execute(Map data)
 
-  /** Create a child stage from YAML data via StageFactory. */
+  /** StageFactory를 통해 자식 스테이지를 생성. */
   def constructChild(String file, String name) {
     def childData = jenkins.loadData(file, name)
     return StageFactory.create(file, name, this, jenkins, childData)
   }
 
-  /** Execute resolved steps using StepFactory. */
+  /** StepFactory를 사용하여 치환된 스텝 목록을 실행. */
   def executeResolvedSteps(List resolvedSteps, String moduleprefix) {
     for (step in resolvedSteps) {
       jenkins.debug("Step: ${step.keySet()}")
@@ -323,7 +324,7 @@ abstract class Stage implements Serializable {
   }
 }
 
-/** Executes a list of steps within one Jenkins stage. Handles env/node wrapping. */
+/** 하나의 Jenkins 스테이지 내에서 스텝 목록을 실행. env/node 래핑 처리. */
 class StepsStage extends Stage {
   StepsStage(String filename, String stagename, Stage parent, JenkinsContext jenkins) {
     super(filename, stagename, parent, jenkins)
@@ -382,7 +383,7 @@ class StepsStage extends Stage {
   }
 }
 
-/** Orchestrates child stages sequentially. */
+/** 자식 스테이지들을 순차적으로 실행. */
 class SequentialStage extends Stage {
   SequentialStage(String filename, String stagename, Stage parent, JenkinsContext jenkins) {
     super(filename, stagename, parent, jenkins)
@@ -466,7 +467,7 @@ class SequentialStage extends Stage {
   }
 }
 
-/** Orchestrates child stages in parallel via Jenkins parallel step. */
+/** Jenkins parallel 스텝을 통해 자식 스테이지들을 병렬 실행. */
 class ParallelStage extends Stage {
   ParallelStage(String filename, String stagename, Stage parent, JenkinsContext jenkins) {
     super(filename, stagename, parent, jenkins)
@@ -551,10 +552,10 @@ class ParallelStage extends Stage {
 }
 
 // ============================================================================
-// Step Layer
+// 스텝 계층
 // ============================================================================
 
-/** Abstract base for all executable steps. Serializable for CPS. */
+/** 모든 실행 가능한 스텝의 추상 기반 클래스. CPS 호환을 위해 Serializable. */
 abstract class Step implements Serializable {
   JenkinsContext jenkins
   Stage stage
@@ -571,7 +572,7 @@ abstract class Step implements Serializable {
   abstract def run()
 }
 
-/** Executes shell commands with env var and module prefix substitution. */
+/** 셸 명령어 실행. 환경 변수 치환 및 모듈 접두사 적용. */
 class ShStep extends Step {
   ShStep(Map raw, JenkinsContext jenkins, Stage stage, String moduleprefix) { super(raw, jenkins, stage, moduleprefix) }
   def run() {
@@ -584,25 +585,25 @@ class ShStep extends Step {
   }
 }
 
-/** Loads and executes external Groovy scripts. */
+/** 외부 Groovy 스크립트를 로드하여 실행. */
 class ScriptStep extends Step {
   ScriptStep(Map raw, JenkinsContext jenkins, Stage stage, String moduleprefix) { super(raw, jenkins, stage, moduleprefix) }
   def run() { jenkins.load(raw["script"]).main() }
 }
 
-/** Loads environment variables from a YAML file. */
+/** YAML 파일에서 환경 변수를 로드. */
 class SetEnvFromFileStep extends Step {
   SetEnvFromFileStep(Map raw, JenkinsContext jenkins, Stage stage, String moduleprefix) { super(raw, jenkins, stage, moduleprefix) }
   def run() { jenkins.setEnvFromFile(raw["setEnvFromFile"]) }
 }
 
-/** Evaluates Groovy expressions. */
+/** Groovy 표현식을 평가. */
 class EvaluateStep extends Step {
   EvaluateStep(Map raw, JenkinsContext jenkins, Stage stage, String moduleprefix) { super(raw, jenkins, stage, moduleprefix) }
   def run() { jenkins.evaluate(raw["evaluate"]) }
 }
 
-/** References and executes another stage, optionally creating a stage wrapper. */
+/** 다른 스테이지를 참조하여 실행. makeStage 옵션으로 스테이지 래퍼 생성 여부 결정. */
 class UseStageStep extends Step {
   UseStageStep(Map raw, JenkinsContext jenkins, Stage stage, String moduleprefix) { super(raw, jenkins, stage, moduleprefix) }
   def run() {
@@ -623,10 +624,10 @@ class UseStageStep extends Step {
 }
 
 // ============================================================================
-// Factories
+// 팩토리
 // ============================================================================
 
-/** Creates appropriate Stage subclass based on YAML structure. Fail-fast on unknown keys. */
+/** YAML 구조에 따라 적절한 Stage 서브클래스를 생성. 알 수 없는 키는 즉시 실패. */
 class StageFactory implements Serializable {
   static Stage create(String filename, String stagename, Stage parent, JenkinsContext jenkins, Map data) {
     if (data == null) jenkins.error("Stage '${stagename}' not found in '${filename}'")
@@ -638,7 +639,7 @@ class StageFactory implements Serializable {
   }
 }
 
-/** Creates appropriate Step subclass based on step directive key. Fail-fast on unknown keys. */
+/** 스텝 디렉티브 키에 따라 적절한 Step 서브클래스를 생성. 알 수 없는 키는 즉시 실패. */
 class StepFactory implements Serializable {
   static Step create(Map step, JenkinsContext jenkins, Stage stage, String moduleprefix) {
     if (step.containsKey("sh")) return new ShStep(step, jenkins, stage, moduleprefix)
@@ -651,7 +652,7 @@ class StepFactory implements Serializable {
 }
 
 // ============================================================================
-// Global Functions (public API — signatures unchanged)
+// 전역 함수 (공개 API — 시그니처 변경 없음)
 // ============================================================================
 
 def evaluation(value) {
