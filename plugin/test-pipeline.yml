@@ -1,0 +1,4 @@
+build:
+  steps:
+    - sh: "echo 'Hello from Stagefy Plugin!'"
+    - sh: "echo 'YAML-based stage execution works!'"
