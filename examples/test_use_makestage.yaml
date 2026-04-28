@@ -1,0 +1,17 @@
+build:
+  steps:
+    - sh: |
+        cat << 'EOF' > tasks.yaml
+        build_all:
+          parallels:
+            - build_a
+            - build_b
+        build_a:
+          steps:
+            - sh: echo "building A" && mkdir -p out/a
+        build_b:
+          steps:
+            - sh: echo "building B" && mkdir -p out/b
+        EOF
+    - use: build_all from tasks.yaml
+    - sh: echo "all done"

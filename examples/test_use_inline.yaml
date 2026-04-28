@@ -1,0 +1,12 @@
+setup:
+  steps:
+    - sh: |
+        cat << 'EOF' > init.yaml
+        init_env:
+          steps:
+            - sh: mkdir -p workspace/out
+            - sh: echo "ready" > workspace/status.txt
+        EOF
+    - use: init_env from init.yaml
+      makeStage: false
+    - sh: cat workspace/status.txt

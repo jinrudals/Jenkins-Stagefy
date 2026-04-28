@@ -61,6 +61,24 @@ class Stagefy {
             this.script.setEnvFromFile(each["setEnvFromFile"])
           }else if(each.containsKey("evaluate")){
             this.script.evaluation(each["evaluate"])
+          }else if(each.containsKey("use")){
+            def useValue = each["use"]
+            def makeStage = each.containsKey("makeStage") ? each["makeStage"] : true
+            if(!useValue.contains(" from ")){
+              this.script.error("use directive must follow 'StageName from filepath' format: '${useValue}'")
+            }
+            def parts = useValue.split(" from ", 2)
+            def targetStage = parts[0].trim()
+            def targetFile = parts[1].trim()
+            def childStage = this.construct_stage(targetFile, targetStage)
+            childStage.check_circular_loop(childStage)
+            if(makeStage){
+              this.script.stage(targetStage){
+                childStage.run()
+              }
+            }else{
+              childStage.run()
+            }
           }
         }
     }

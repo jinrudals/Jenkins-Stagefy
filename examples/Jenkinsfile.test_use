@@ -1,0 +1,76 @@
+@Library('stagefy@001-steps-use-directive') _
+
+/*
+ * Test Jenkinsfile for the `use` step directive feature.
+ *
+ * Flow:
+ *   1. Dynamically generate entry.yaml (the top-level Jenkins.yml equivalent)
+ *   2. stagefy.run() executes entry.yaml::main
+ *   3. Inside main, a sh step generates tasks.yaml at runtime
+ *   4. The `use` directive then references a stage from tasks.yaml
+ *
+ * Expected Jenkins UI output:
+ *   [Generate Entry YAML]
+ *   [Run via Stagefy]
+ *     [main]
+ *       └─ sh: cat << 'TASKS' > tasks.yaml ...
+ *       └─ [run_all]              <- use directive, makeStage: true (default)
+ *            ├─ [task_a]          <- parallel branch
+ *            └─ [task_b]          <- parallel branch
+ *       └─ sh: echo "All tasks complete"
+ */
+
+pipeline {
+    agent any
+
+    stages {
+
+        stage('Generate Entry YAML') {
+            steps {
+                script {
+                    // Dynamically create the entry YAML.
+                    // The `sh: |` block inside uses a heredoc to generate tasks.yaml at runtime,
+                    // then the `use` directive references a stage from that generated file.
+                    //
+                    // Note: YAML block scalar (`|`) strips common indentation, so the heredoc
+                    // terminator `TASKS` ends up at column 0 when the sh step is executed —
+                    // which is what the shell requires for heredoc to terminate correctly.
+                    writeFile file: 'entry.yaml', text: """\
+main:
+  steps:
+    - sh: |
+        cat << 'TASKS' > tasks.yaml
+        run_all:
+          parallels:
+            - task_a
+            - task_b
+        task_a:
+          steps:
+            - sh: echo "Task A done"
+        task_b:
+          steps:
+            - sh: echo "Task B done"
+        TASKS
+    - use: run_all from tasks.yaml
+    - sh: echo "All tasks complete"
+"""
+                }
+            }
+        }
+
+        stage('Run via Stagefy') {
+            steps {
+                script {
+                    stagefy.run('entry.yaml', 'main')
+                }
+            }
+        }
+
+    }
+
+    post {
+        always {
+            sh 'rm -f entry.yaml tasks.yaml'
+        }
+    }
+}

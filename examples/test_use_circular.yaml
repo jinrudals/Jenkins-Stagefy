@@ -1,0 +1,9 @@
+# T009: Circular reference scenario — A -> B -> A (should fail with Circular Loop Execution error)
+# Expected error: "Circular Loop Execution B from test_use_circular.yaml"
+stage_a:
+  steps:
+    - use: stage_b from test_use_circular.yaml
+
+stage_b:
+  steps:
+    - use: stage_a from test_use_circular.yaml
