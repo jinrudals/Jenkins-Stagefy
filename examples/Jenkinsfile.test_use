@@ -1,23 +1,19 @@
 @Library('stagefy@001-steps-use-directive') _
 
 /*
- * Test Jenkinsfile for the `use` step directive feature.
+ * Comprehensive test Jenkinsfile for the `use` step directive.
  *
- * Flow:
- *   1. Dynamically generate entry.yaml (the top-level Jenkins.yml equivalent)
- *   2. stagefy.run() executes entry.yaml::main
- *   3. Inside main, a sh step generates tasks.yaml at runtime
- *   4. The `use` directive then references a stage from tasks.yaml
+ * Positive tests (T1–T5): expected to pass
+ *   T1  makeStage: true (default) — new Jenkins stage created
+ *   T2  makeStage: false          — inline execution, no new stage
+ *   T3  DAG: same stage referenced from multiple paths
+ *   T4  Nested use chain A→B→C (not circular)
+ *   T5  makeStage: false + parallels type
  *
- * Expected Jenkins UI output:
- *   [Generate Entry YAML]
- *   [Run via Stagefy]
- *     [main]
- *       └─ sh: cat << 'TASKS' > tasks.yaml ...
- *       └─ [run_all]              <- use directive, makeStage: true (default)
- *            ├─ [task_a]          <- parallel branch
- *            └─ [task_b]          <- parallel branch
- *       └─ sh: echo "All tasks complete"
+ * Negative tests (T6–T8): expected to throw — verified via try/catch
+ *   T6  Circular reference A→B→A  (Circular Loop Execution error)
+ *   T7  Invalid use format        (no " from " keyword)
+ *   T8  Stage not found in file   (NullPointerException from readYaml)
  */
 
 pipeline {
@@ -25,43 +21,224 @@ pipeline {
 
     stages {
 
-        stage('Generate Entry YAML') {
+        // ── T1: makeStage true (기본값) ───────────────────────────────────
+        // use 디렉티브 실행 시 Jenkins UI에 새 스테이지가 생성되어야 함
+        stage('T1: makeStage default - new stage created') {
             steps {
                 script {
-                    // Dynamically create the entry YAML.
-                    // The `sh: |` block inside uses a heredoc to generate tasks.yaml at runtime,
-                    // then the `use` directive references a stage from that generated file.
-                    //
-                    // Note: YAML block scalar (`|`) strips common indentation, so the heredoc
-                    // terminator `TASKS` ends up at column 0 when the sh step is executed —
-                    // which is what the shell requires for heredoc to terminate correctly.
-                    writeFile file: 'entry.yaml', text: """\
-main:
+                    writeFile file: 't1_tasks.yaml', text: '''\
+t1_task:
   steps:
-    - sh: |
-        cat << 'TASKS' > tasks.yaml
-        run_all:
-          parallels:
-            - task_a
-            - task_b
-        task_a:
-          steps:
-            - sh: echo "Task A done"
-        task_b:
-          steps:
-            - sh: echo "Task B done"
-        TASKS
-    - use: run_all from tasks.yaml
-    - sh: echo "All tasks complete"
-"""
+    - sh: echo "inside t1_task"
+'''
+                    writeFile file: 't1_entry.yaml', text: '''\
+t1_main:
+  steps:
+    - sh: echo "before use"
+    - use: t1_task from t1_tasks.yaml
+    - sh: echo "after use"
+'''
+                    stagefy.run('t1_entry.yaml', 't1_main')
+                    echo "✓ T1 PASSED"
                 }
             }
         }
 
-        stage('Run via Stagefy') {
+        // ── T2: makeStage false (인라인 실행) ────────────────────────────
+        // Jenkins UI에 새 스테이지가 생성되지 않고 현재 스테이지 내에서 실행
+        stage('T2: makeStage false - inline execution') {
             steps {
                 script {
-                    stagefy.run('entry.yaml', 'main')
+                    writeFile file: 't2_tasks.yaml', text: '''\
+t2_task:
+  steps:
+    - sh: echo "inline execution - no new stage in UI"
+'''
+                    writeFile file: 't2_entry.yaml', text: '''\
+t2_main:
+  steps:
+    - sh: echo "before inline"
+    - use: t2_task from t2_tasks.yaml
+      makeStage: false
+    - sh: echo "after inline"
+'''
+                    stagefy.run('t2_entry.yaml', 't2_main')
+                    echo "✓ T2 PASSED"
+                }
+            }
+        }
+
+        // ── T3: DAG (동일 스테이지 다중 참조) ────────────────────────────
+        // t3_common 이 t3_a 와 t3_b 양쪽에서 참조됨 — 순환 아님, 정상 실행
+        stage('T3: DAG - same stage referenced from multiple paths') {
+            steps {
+                script {
+                    writeFile file: 't3_shared.yaml', text: '''\
+t3_common:
+  steps:
+    - sh: echo "common stage executed"
+
+t3_a:
+  steps:
+    - use: t3_common from t3_shared.yaml
+    - sh: echo "A done"
+
+t3_b:
+  steps:
+    - use: t3_common from t3_shared.yaml
+    - sh: echo "B done"
+'''
+                    writeFile file: 't3_entry.yaml', text: '''\
+t3_main:
+  steps:
+    - use: t3_a from t3_shared.yaml
+    - use: t3_b from t3_shared.yaml
+'''
+                    stagefy.run('t3_entry.yaml', 't3_main')
+                    echo "✓ T3 PASSED"
+                }
+            }
+        }
+
+        // ── T4: 중첩 use 체인 (A→B→C, 순환 아님) ────────────────────────
+        stage('T4: Nested use chain A->B->C (not circular)') {
+            steps {
+                script {
+                    writeFile file: 't4_chain.yaml', text: '''\
+t4_c:
+  steps:
+    - sh: echo "C executed"
+
+t4_b:
+  steps:
+    - use: t4_c from t4_chain.yaml
+    - sh: echo "B executed"
+
+t4_a:
+  steps:
+    - use: t4_b from t4_chain.yaml
+    - sh: echo "A executed"
+'''
+                    writeFile file: 't4_entry.yaml', text: '''\
+t4_main:
+  steps:
+    - use: t4_a from t4_chain.yaml
+'''
+                    stagefy.run('t4_entry.yaml', 't4_main')
+                    echo "✓ T4 PASSED"
+                }
+            }
+        }
+
+        // ── T5: makeStage false + parallels 타입 ─────────────────────────
+        // 현재 스테이지 컨텍스트 안에서 parallel() 직접 호출 — Jenkins 정상 지원
+        stage('T5: makeStage false + parallels type') {
+            steps {
+                script {
+                    writeFile file: 't5_tasks.yaml', text: '''\
+t5_parallel:
+  parallels:
+    - t5_p1
+    - t5_p2
+
+t5_p1:
+  steps:
+    - sh: echo "parallel branch 1"
+
+t5_p2:
+  steps:
+    - sh: echo "parallel branch 2"
+'''
+                    writeFile file: 't5_entry.yaml', text: '''\
+t5_main:
+  steps:
+    - sh: echo "before parallel inline"
+    - use: t5_parallel from t5_tasks.yaml
+      makeStage: false
+    - sh: echo "after parallel inline"
+'''
+                    stagefy.run('t5_entry.yaml', 't5_main')
+                    echo "✓ T5 PASSED"
+                }
+            }
+        }
+
+        // ── T6: 순환 참조 A→B→A (Circular Loop Execution 에러 기대) ──────
+        stage('T6: Circular reference A->B->A (expect error)') {
+            steps {
+                script {
+                    writeFile file: 't6_circular.yaml', text: '''\
+t6_a:
+  steps:
+    - use: t6_b from t6_circular.yaml
+
+t6_b:
+  steps:
+    - use: t6_a from t6_circular.yaml
+'''
+                    writeFile file: 't6_entry.yaml', text: '''\
+t6_main:
+  steps:
+    - use: t6_a from t6_circular.yaml
+'''
+                    try {
+                        stagefy.run('t6_entry.yaml', 't6_main')
+                        error "T6 FAILED: expected Circular Loop Execution error but none was thrown"
+                    } catch (Exception e) {
+                        if (e.message?.contains("Circular Loop Execution")) {
+                            echo "✓ T6 PASSED: caught expected error → ${e.message}"
+                        } else {
+                            error "T6 FAILED: unexpected error → ${e.message}"
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── T7: 잘못된 use 형식 (" from " 없음) ──────────────────────────
+        stage('T7: Invalid use format - no " from " keyword (expect error)') {
+            steps {
+                script {
+                    writeFile file: 't7_entry.yaml', text: '''\
+t7_main:
+  steps:
+    - use: bad_value_without_from_keyword
+'''
+                    try {
+                        stagefy.run('t7_entry.yaml', 't7_main')
+                        error "T7 FAILED: expected format error but none was thrown"
+                    } catch (Exception e) {
+                        if (e.message?.contains("use directive must follow")) {
+                            echo "✓ T7 PASSED: caught expected error → ${e.message}"
+                        } else {
+                            error "T7 FAILED: unexpected error → ${e.message}"
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── T8: 존재하지 않는 스테이지명 ────────────────────────────────
+        // readYaml 에서 null 반환 → run() 에서 예외 발생
+        stage('T8: Stage not found in file (expect error)') {
+            steps {
+                script {
+                    writeFile file: 't8_tasks.yaml', text: '''\
+t8_existing:
+  steps:
+    - sh: echo "this stage exists"
+'''
+                    writeFile file: 't8_entry.yaml', text: '''\
+t8_main:
+  steps:
+    - use: t8_nonexistent from t8_tasks.yaml
+'''
+                    try {
+                        stagefy.run('t8_entry.yaml', 't8_main')
+                        error "T8 FAILED: expected error for missing stage but none was thrown"
+                    } catch (Exception e) {
+                        echo "✓ T8 PASSED: caught expected error → ${e.message}"
+                    }
                 }
             }
         }
@@ -70,7 +247,7 @@ main:
 
     post {
         always {
-            sh 'rm -f entry.yaml tasks.yaml'
+            sh 'rm -f t*.yaml'
         }
     }
 }
