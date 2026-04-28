@@ -1,0 +1,15 @@
+# T008: DAG scenario — same stage referenced from multiple paths (should NOT error)
+main:
+  steps:
+    - sh: |
+        cat << 'EOF' > shared.yaml
+        cleanup:
+          steps:
+            - sh: rm -rf tmp && mkdir tmp
+        full_job:
+          steps:
+            - use: cleanup from shared.yaml
+            - sh: echo "full job done"
+        EOF
+    - use: cleanup from shared.yaml
+    - use: full_job from shared.yaml

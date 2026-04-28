@@ -1,0 +1,198 @@
+env:
+  PRJ_NAME: n1dv
+  USER_NAME: jenkins
+  PATH: /app/git2.41.0/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  sourcefiles: "#!/bin/env csh
+
+    echo 'Source Files'; source /workspace/project/N1B0/dv/LIB/n1_prj_env.csh;
+    source VERIFICATION/.jenkins/SourceMe.csh; source
+    VERIFICATION/.jenkins/env.csh;"
+
+MR:
+  stages:
+    - setup
+    - compile
+    #- simulation
+
+# use directive example: generate YAML dynamically then reference its stage
+use_example:
+  steps:
+    - sh: |
+        cat << 'EOF' > dynamic_tasks.yaml
+        run_checks:
+          parallels:
+            - check_a
+            - check_b
+        check_a:
+          steps:
+            - sh: echo "check A passed"
+        check_b:
+          steps:
+            - sh: echo "check B passed"
+        EOF
+    - use: run_checks from dynamic_tasks.yaml
+    - sh: echo "all checks complete"
+
+setup:
+  steps:
+    - evaluate: env.TAG_VERSION = readFile('VERIFICATION/.jenkins/RTL_version').trim()
+    - sh: /Infra/Tools/python/3.11.11/bin/python3 VERIFICATION/.jenkins/reload.py
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/common.py --action=update update"
+
+generation_setup:
+  steps:
+    - sh: echo ${env.TARGET_TAG_VERSION} > VERIFICATION/.jenkins/RTL_version
+    - evaluate: env.TAG_VERSION = readFile('VERIFICATION/.jenkins/RTL_version').trim()
+    - sh: /Infra/Tools/python/3.11.11/bin/python3 VERIFICATION/.jenkins/reload.py
+
+compile:
+  parallels:
+    - cpustub_compile_sim
+    - armrtl_compile_sim
+    - armrtl_m_compile_sim
+    - armrtl_f_compile
+    - cpustub_n_compile
+    - bus_compile
+    - cpustub_u_compile
+    - cpustub_p_compile
+
+cpustub_compile_sim:
+  steps:
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/common.py --action=scratch cpustub"
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/common.py --action=test
+        test_elab-cpustub-pkg=sanity_pkg-test_c=base_test_c-vseq_c=sanity_MR_vs\
+        eq_c-HACK_BOOT-SKIP_MIF_INIT-SKIP_CMU_INIT-SKIP_ENABLE_ERROR"
+    - sh: "grep -e 'TEST PASSED'
+        outfeed1/test_elab-cpustub-pkg=sanity_pkg-test_c=base_test_c-vseq_c=san\
+        ity_MR_vseq_c-HACK_BOOT-SKIP_MIF_INIT-SKIP_CMU_INIT-SKIP_ENABLE_ERROR/r\
+        un_log.log"
+
+armrtl_compile_sim:
+  steps:
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/common.py --action=scratch armrtl"
+#ML3_RTL    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3 VERIFICATION/.jenkins/regression_v2/common.py --action=test test-armrtl-pkg=safe_pkg-test_c=base_test_c-vseq_c=base_vseq_c-HACK_BOOT-SAFE_ONLY-FOREVER-BACKDOOR_CM7_IMAGE-FORCE_CPUWAIT"
+#ML3_RTL    - sh: "grep -e 'TEST PASSED' outfeed1/test-armrtl-pkg=safe_pkg-test_c=base_test_c-vseq_c=base_vseq_c-HACK_BOOT-SAFE_ONLY-FOREVER-BACKDOOR_CM7_IMAGE-FORCE_CPUWAIT/run_log.log"
+
+armrtl_m_compile_sim:
+  steps:
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/common.py --action=scratch armrtl_m"
+#    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3 VERIFICATION/.jenkins/regression_v2/common.py --action=test test_elab-armrtl_m-pkg=safe_pkg-test_c=base_test_c-vseq_c=blk_safe_cm7_boot_seq_c-HACK_BOOT-SAFE_ONLY-FOREVER-BACKDOOR_CM7_IMAGE-SKIP_CA53"
+#    - sh: "grep -e 'TEST PASSED' outfeed1/test_elab-armrtl_m-pkg=safe_pkg-test_c=base_test_c-vseq_c=blk_safe_cm7_boot_seq_c-HACK_BOOT-SAFE_ONLY-FOREVER-BACKDOOR_CM7_IMAGE-SKIP_CA53/run_log.log"
+
+armrtl_f_compile:
+  steps:
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/common.py --action=scratch armrtl_f"
+
+bus_compile:
+  steps:
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/common.py --action=scratch bus"
+    #- sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3 VERIFICATION/.jenkins/regression_v2/common.py --action=test test_elab-bus-pkg=bus_test_pkg-test_c=base_test_c-vseq_c=axi_random_wr_rd_vseq_c-BUS_SANITY-SKIP_CMU_INIT-SKIP_MIF_INIT-HACK_BOOT-SKIP_ENABLE_ERROR"
+    #- sh: "grep -e 'TEST PASSED' outfeed1/test_elab-bus-pkg=bus_test_pkg-test_c=base_test_c-vseq_c=axi_random_wr_rd_vseq_c-BUS_SANITY-SKIP_CMU_INIT-SKIP_MIF_INIT-HACK_BOOT-SKIP_ENABLE_ERROR/run_log.log"
+
+cpustub_n_compile:
+  steps:
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/common.py --action=scratch
+        cpustub_n"
+
+cpustub_u_compile:
+  steps:
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/common.py --action=scratch
+        cpustub_u"
+
+cpustub_p_compile:
+  steps:
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/common.py --action=scratch
+        cpustub_p"
+
+# Simulation
+simulation:
+  parallels:
+    #- sanity_vseq
+    #- armrtl_m_bringup
+    - armrtl_bringup
+#        - armrtl_rtcore_sanity_vseq
+
+sanity_vseq:
+  steps:
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/common.py --action=test
+        test_elab-cpustub-pkg=sanity_pkg-test_c=base_test_c-vseq_c=sanity_MR_vs\
+        eq_c-HACK_BOOT-SKIP_MIF_INIT-SKIP_CMU_INIT-DISABLE_CM7_SVA-SKIP_ENABLE_\
+        ERROR"
+    - sh: "grep -e 'TEST PASSED'
+        outfeed1/test_elab-cpustub-pkg=sanity_pkg-test_c=base_test_c-vseq_c=san\
+        ity_MR_vseq_c-HACK_BOOT-SKIP_MIF_INIT-SKIP_CMU_INIT-DISABLE_CM7_SVA-SKI\
+        P_ENABLE_ERROR/run_log.log"
+
+armrtl_m_bringup:
+  steps:
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/common.py --action=test
+        test_elab-armrtl_m-pkg=safe_pkg-test_c=base_test_c-vseq_c=blk_safe_cm7_\
+        boot_seq_c-HACK_BOOT-SAFE_ONLY-FOREVER-BACKDOOR_CM7_IMAGE-SKIP_CA53"
+    - sh: "grep -e 'TEST PASSED'
+        outfeed1/test_elab-armrtl_m-pkg=safe_pkg-test_c=base_test_c-vseq_c=blk_\
+        safe_cm7_boot_seq_c-HACK_BOOT-SAFE_ONLY-FOREVER-BACKDOOR_CM7_IMAGE-SKIP\
+        _CA53/run_log.log"
+
+armrtl_bringup:
+  steps:
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/common.py --action=test
+        test_elab-armrtl-pkg=safe_pkg-test_c=base_test_c-vseq_c=base_vseq_c-HAC\
+        K_BOOT-SAFE_ONLY-FOREVER-BACKDOOR_CM7_IMAGE-FORCE_CPUWAIT"
+    - sh: "grep -e 'TEST PASSED'
+        outfeed1/test_elab-armrtl-pkg=safe_pkg-test_c=base_test_c-vseq_c=base_v\
+        seq_c-HACK_BOOT-SAFE_ONLY-FOREVER-BACKDOOR_CM7_IMAGE-FORCE_CPUWAIT/run_\
+        log.log"
+
+regression:
+  stages:
+    - regression.setup # generage compiles.yml
+    - setup
+    - compile_simulate
+
+regression.setup:
+  steps:
+    - evaluate: env.TAG_VERSION = readFile('VERIFICATION/.jenkins/RTL_version').trim()
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/setup.py"
+
+compile_simulate:
+  parallels:
+    - compile from compiles.yml
+    - regression.simulate
+
+regression.simulate:
+  steps:
+    - sh: "${env.sourcefiles} /Infra/Tools/python/3.11.11/bin/python3
+        VERIFICATION/.jenkins/regression_v2/executor.py"
+    - sh: "rm -rf VERIFICATION; unlink DESIGN"
+
+generation:
+  stages:
+    - generation_setup
+    - parallel_run_script
+
+parallel_run_script:
+  parallels:
+    - gen_vector
+
+gen_vector:
+  steps:
+    - sh: "echo start gen_vector"
+    - sh: "${env.sourcefiles} srun -p jenkins --symbol=dv_script csh
+        VERIFICATION/script/system_run/gen_vector.csh"
+    - sh: "echo start post_gen_vector"
+    - sh: "${env.sourcefiles} srun -p jenkins --symbol=dv_script csh
+        VERIFICATION/script/system_run/post_gen_vector.csh"
