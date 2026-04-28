@@ -14,6 +14,21 @@ MR:
     - compile
     #- simulation
 
+# template example: define a reusable step set and iterate over env var or inline list
+compile_target:
+  template:
+    arguments: [TARGET]
+  steps:
+    - sh: "${env.sourcefiles} make clean TARGET={TARGET}"
+    - sh: "${env.sourcefiles} make build TARGET={TARGET}"
+
+# parallel builds driven by a Jenkins parameter: COMPILE_TARGETS=cpustub,armrtl,bus
+compile_all_targets:
+  parallels:
+    - iterated:
+        template: compile_target
+        over: env.COMPILE_TARGETS
+
 # use directive example: generate YAML dynamically then reference its stage
 use_example:
   steps:

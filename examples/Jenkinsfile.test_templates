@@ -1,0 +1,284 @@
+@Library('stagefy@002-parallel-stage-templates') _
+
+pipeline {
+  agent any
+  stages {
+    stage('prepare_template_fixtures') {
+      steps {
+        writeFile file: 'examples/test_templates_direct.yaml', text: '''\
+# Direct template reference fixtures
+
+compile_target:
+  template:
+    arguments: [TARGET]
+  steps:
+    - sh: echo "building TARGET={TARGET}"
+
+run_test:
+  template:
+    arguments: [SUITE, TARGET]
+  steps:
+    - sh: echo "running suite={SUITE} on target={TARGET}"
+    - sh: 'echo "done: {SUITE}/{TARGET}"'
+
+test_direct_parallels:
+  parallels:
+    - template: compile_target
+      TARGET: arm64
+    - template: compile_target
+      TARGET: x86_64
+
+test_direct_stages:
+  stages:
+    - template: run_test
+      SUITE: unit
+      TARGET: arm64
+    - template: run_test
+      SUITE: integration
+      TARGET: x86_64
+
+test_direct_steps:
+  steps:
+    - sh: echo "before template"
+    - template: compile_target
+      TARGET: riscv
+    - sh: echo "after template"
+'''
+
+        writeFile file: 'examples/test_templates_iterated_scalar.yaml', text: '''\
+# Iterated scalar list fixtures
+
+run_suite:
+  template:
+    arguments: [SUITE]
+  steps:
+    - sh: echo "running suite={SUITE}"
+
+test_scalar_parallels:
+  parallels:
+    - iterated:
+        template: run_suite
+        over: [unit, integration, e2e]
+
+test_scalar_stages:
+  stages:
+    - iterated:
+        template: run_suite
+        over: [unit, integration, e2e]
+
+test_scalar_steps:
+  steps:
+    - sh: echo "start"
+    - iterated:
+        template: run_suite
+        over: [unit, integration, e2e]
+    - sh: echo "end"
+
+test_scalar_empty:
+  steps:
+    - sh: echo "before empty iterated"
+    - iterated:
+        template: run_suite
+        over: []
+    - sh: echo "after empty iterated - should reach here"
+'''
+
+        writeFile file: 'examples/test_templates_iterated_map.yaml', text: '''\
+# Iterated map list fixtures
+
+build_combo:
+  template:
+    arguments: [TARGET, MODE]
+  steps:
+    - sh: echo "building TARGET={TARGET} MODE={MODE}"
+
+test_map_parallels:
+  parallels:
+    - iterated:
+        template: build_combo
+        over:
+          - TARGET: arm64
+            MODE: debug
+            _name: arm64_debug
+          - TARGET: x86_64
+            MODE: release
+            _name: x86_release
+          - TARGET: riscv
+            MODE: debug
+
+test_map_stages:
+  stages:
+    - iterated:
+        template: build_combo
+        over:
+          - TARGET: arm64
+            MODE: debug
+            _name: arm64_debug
+          - TARGET: x86_64
+            MODE: release
+            _name: x86_release
+
+test_map_steps:
+  steps:
+    - sh: echo "start matrix"
+    - iterated:
+        template: build_combo
+        over:
+          - TARGET: arm64
+            MODE: debug
+          - TARGET: x86_64
+            MODE: release
+    - sh: echo "end matrix"
+'''
+
+        writeFile file: 'examples/test_templates_iterated_env.yaml', text: '''\
+# Iterated env variable fixtures
+
+build_platform:
+  template:
+    arguments: [PLATFORM]
+  steps:
+    - sh: echo "building for platform={PLATFORM}"
+
+run_combo:
+  template:
+    arguments: [TARGET, MODE]
+  steps:
+    - sh: echo "running TARGET={TARGET} MODE={MODE}"
+
+test_env_scalar:
+  parallels:
+    - iterated:
+        template: build_platform
+        over: env.PLATFORMS
+
+test_env_json_scalar:
+  parallels:
+    - iterated:
+        template: build_platform
+        over: env.PLATFORMS_JSON
+
+test_env_map:
+  parallels:
+    - iterated:
+        template: run_combo
+        over: env.MATRIX
+
+test_env_empty:
+  steps:
+    - sh: echo "before empty env iterated"
+    - iterated:
+        template: build_platform
+        over: env.EMPTY_VAR
+    - sh: echo "after empty env iterated - should reach here"
+'''
+      }
+    }
+
+    // US1: Direct template references
+    stage('test_direct_parallels') {
+      steps {
+        script { stagefy.run('examples/test_templates_direct.yaml', 'test_direct_parallels') }
+      }
+    }
+    stage('test_direct_stages') {
+      steps {
+        script { stagefy.run('examples/test_templates_direct.yaml', 'test_direct_stages') }
+      }
+    }
+    stage('test_direct_steps') {
+      steps {
+        script { stagefy.run('examples/test_templates_direct.yaml', 'test_direct_steps') }
+      }
+    }
+    stage('test_direct_template_rejected') {
+      steps {
+        script {
+          try {
+            stagefy.run('examples/test_templates_direct.yaml', 'compile_target')
+            error('Expected direct template execution to fail')
+          } catch (Exception err) {
+            if (!err.message.contains("cannot be executed directly")) {
+              throw err
+            }
+            echo "Direct template execution rejected as expected: ${err.message}"
+          }
+        }
+      }
+    }
+
+    // US2: Iterated scalar list
+    stage('test_scalar_parallels') {
+      steps {
+        script { stagefy.run('examples/test_templates_iterated_scalar.yaml', 'test_scalar_parallels') }
+      }
+    }
+    stage('test_scalar_stages') {
+      steps {
+        script { stagefy.run('examples/test_templates_iterated_scalar.yaml', 'test_scalar_stages') }
+      }
+    }
+    stage('test_scalar_steps') {
+      steps {
+        script { stagefy.run('examples/test_templates_iterated_scalar.yaml', 'test_scalar_steps') }
+      }
+    }
+    stage('test_scalar_empty') {
+      steps {
+        script { stagefy.run('examples/test_templates_iterated_scalar.yaml', 'test_scalar_empty') }
+      }
+    }
+
+    // US3: Iterated map list
+    stage('test_map_parallels') {
+      steps {
+        script { stagefy.run('examples/test_templates_iterated_map.yaml', 'test_map_parallels') }
+      }
+    }
+    stage('test_map_stages') {
+      steps {
+        script { stagefy.run('examples/test_templates_iterated_map.yaml', 'test_map_stages') }
+      }
+    }
+    stage('test_map_steps') {
+      steps {
+        script { stagefy.run('examples/test_templates_iterated_map.yaml', 'test_map_steps') }
+      }
+    }
+
+    // US4: Iterated env variable
+    stage('test_env_scalar') {
+      environment {
+        PLATFORMS = 'arm64,x86_64'
+      }
+      steps {
+        script { stagefy.run('examples/test_templates_iterated_env.yaml', 'test_env_scalar') }
+      }
+    }
+    stage('test_env_json_scalar') {
+      environment {
+        PLATFORMS_JSON = '["arm64","x86_64"]'
+      }
+      steps {
+        script { stagefy.run('examples/test_templates_iterated_env.yaml', 'test_env_json_scalar') }
+      }
+    }
+    stage('test_env_map') {
+      environment {
+        MATRIX = '[{"TARGET":"arm64","MODE":"debug"},{"TARGET":"x86_64","MODE":"release"}]'
+      }
+      steps {
+        script { stagefy.run('examples/test_templates_iterated_env.yaml', 'test_env_map') }
+      }
+    }
+    stage('test_env_empty') {
+      environment {
+        EMPTY_VAR = ''
+      }
+      steps {
+        script { stagefy.run('examples/test_templates_iterated_env.yaml', 'test_env_empty') }
+      }
+    }
+
+  }
+}
