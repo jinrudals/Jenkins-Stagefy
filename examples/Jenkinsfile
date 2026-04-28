@@ -1,0 +1,168 @@
+@Library('stagefy@002-parallel-stage-templates') _
+
+
+@NonCPS
+def setParentEnv(){
+    def parentBuild = currentBuild.upstreamBuilds
+    if(parentBuild.size() != 0) {
+      def pEnv = currentBuild.upstreamBuilds[-1].getRawBuild().getEnvironment()
+      pEnv.each {
+          // Do set only keys not in the child job
+          if(!env[it.key]) {
+            env.setProperty(it.key, it.value)
+            env[it.key] = it.value
+          }
+      }
+    }
+}
+
+@NonCPS
+def abortOlderBuilds(String myMrIid, String mySourceBranch, String myTargetBranch) {
+  def myJob = currentBuild.rawBuild.parent
+  def myBuildNum = currentBuild.number
+
+  for (def b : myJob.builds) {
+    if (b.isBuilding() && b.number < myBuildNum) {
+      // Runtime env vars (set via setParentEnv) are not in b.getEnvironment().
+      // Read them from b's upstream (parent) build where GitLab vars actually live.
+      String bMrIid = null
+      String bSourceBranch = null
+      String bTargetBranch = null
+      for (def cause : b.getCauses()) {
+        if (cause instanceof hudson.model.Cause.UpstreamCause) {
+          def parentEnv = cause.getUpstreamRun()?.getEnvironment(hudson.model.TaskListener.NULL)
+          bMrIid = parentEnv?.get('gitlabMergeRequestIid')
+          bSourceBranch = parentEnv?.get('gitlabSourceBranch')
+          bTargetBranch = parentEnv?.get('gitlabTargetBranch')
+          break
+        }
+      }
+
+      boolean sameMr = myMrIid && bMrIid == myMrIid
+      boolean sameBranch = !myMrIid && mySourceBranch && bSourceBranch == mySourceBranch && bTargetBranch == myTargetBranch
+      if (sameMr || sameBranch) {
+        println("Aborting older build #${b.number} for same MR")
+        b.doStop()
+      } else {
+        println("DEBUG:: Older build #${b.number} not aborted. bMrIid=${bMrIid}, myMrIid=${myMrIid}")
+      }
+    }
+  }
+}
+
+
+pipeline{
+  agent any
+  options {
+    buildDiscarder(logRotator(daysToKeepStr: '10'))
+  }
+  stages{
+    stage("Env Set") {
+      steps {
+        script {
+          print("Setting Parent Environemnt")
+          setParentEnv()
+          abortOlderBuilds(env.gitlabMergeRequestIid, env.gitlabSourceBranch, env.gitlabTargetBranch)
+        }
+      }
+    }
+    stage("Find Local MR"){
+      steps{
+        script{
+          // Set Default environment
+          env.startname = "main"
+          env.wspath = env.WORKSPACE
+          env.target = env.gitlabTargetBranch
+          env.HOMEPATH = "."
+          // If configured
+          if(env.gitlabTargetRepoName != null){
+            //properties([gitLabConnection(gitLabConnection: 'Portal Gitlab', jobCredentialId: ''), gitLabConnection(gitLabConnection: 'Venus Gitlab', jobCredentialId: '')])
+            def gitlabHttpUrl = env.gitlabTargetRepoHttpUrl.replace(".git", "")
+            currentBuild.description = """<a href="${gitlabHttpUrl}/-/merge_requests/${env.gitlabMergeRequestIid}"> ${env.gitlabTargetRepoName}::${env.gitlabSourceBranch}->${env.gitlabTargetBranch} #${env.gitlabMergeRequestIid}</a>"""
+          }
+        }
+      }
+    }
+    stage("Initial"){
+      steps {
+        script{
+          // Set Default environment
+          env.startname = "main"
+          env.wspath = env.WORKSPACE
+          env.HOMEPATH = "."
+          // If configured
+          if(env.gitlabTargetRepoName != null){
+            cleanWs()   // Clean Workspace
+            env.isGitLab = true
+
+            env.skipped = true
+
+            env.startname = "MR"
+            env.HOMEPATH = env.gitlabTargetRepoSshUrl.tokenize("/").last().replace(".git", "")
+
+              checkout(
+                [
+                  $class: 'GitSCM',
+                  branches: [[name: "*/${env.gitlabSourceBranch}"]],
+                  extensions: [
+                    [$class: 'RelativeTargetDirectory', relativeTargetDir: env.HOMEPATH],
+                    [$class: 'PreBuildMerge', options: [mergeRemote: "origin", mergeTarget: "${env.gitlabTargetBranch}"]]
+                  ],
+                  userRemoteConfigs: [
+                    [credentialsId: 'ssh_jenkins', name: 'origin', url: env.gitlabTargetRepoSshUrl]
+                  ]
+                ]
+              )
+            }
+            env.gitdiff = sh (
+              script: "git -C ${env.HOMEPATH} show --first-parent | grep diff",
+              returnStdout: true
+            ).trim()
+          def settingFiles = ["${env.HOMEPATH}/Jenkins.yml", "${env.HOMEPATH}/.jenkins/workflows.yml"]
+          settingFiles.each {
+            settingFile ->
+              if(fileExists(settingFile)){
+                data = readYaml(file : settingFile)
+                def targetYaml = data['TargetBranches']
+                if (targetYaml == null){
+                  targetYaml = []
+                }
+                targetYaml.add('^(main|master)$')
+                if (true){
+//                  sh "cp -rf ${env.HOMEPATH}/.git ."
+                  updateGitlabCommitStatus(name: "MR.${env.gitlabTargetBranch}", state: 'running')
+                  env.skipped = false
+                  if (data.env != null){
+                    for(each in data.env.keySet()){
+                      env[each] = data.env[each]
+                    }
+                  }
+                  if(data.MR != null){
+                    stagefy.run(settingFile, env.startname)
+                  }
+                }
+              }
+          }
+
+        }
+      }
+    }
+  }
+    post {
+        success {
+          script{
+              updateGitlabCommitStatus(name: "MR.${env.gitlabTargetBranch}", state: 'success')
+          }
+        }
+        failure {
+          script{
+              updateGitlabCommitStatus(name: "MR.${env.gitlabTargetBranch}", state: 'failed')
+          }
+        }
+        aborted {
+          script{
+              updateGitlabCommitStatus(name: "MR.${env.gitlabTargetBranch}", state: 'failed')
+          }
+        }
+    }
+}
