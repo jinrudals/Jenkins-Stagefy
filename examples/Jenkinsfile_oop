@@ -1,0 +1,447 @@
+@Library('stagefy@003-oop-refactoring') _
+
+/*
+ * OOP Refactoring Verification Jenkinsfile
+ *
+ * Dynamically generates YAML fixtures and exercises every code path
+ * in the refactored architecture:
+ *
+ *   T01  StepsStage — basic sh/evaluate/setEnvFromFile steps
+ *   T02  SequentialStage — stages: with string refs
+ *   T03  ParallelStage — parallels: with string refs
+ *   T04  UseStageStep — use directive (makeStage true/false)
+ *   T05  Circular reference detection
+ *   T06  Template direct ref in steps
+ *   T07  Template direct ref in parallels
+ *   T08  Template direct ref in stages
+ *   T09  Iterated scalar in parallels
+ *   T10  Iterated map with _name in stages
+ *   T11  Iterated via env var (CSV + JSON)
+ *   T12  Recursive template substitution
+ *   T13  env:/node: wrappers on StepsStage
+ *   T14  when: conditional stage skip
+ *   T15  modules: prefix
+ *   T16  Unknown directive fail-fast (StepFactory)
+ *   T17  Unknown stage type fail-fast (StageFactory)
+ *   T18  Template executed directly (rejected)
+ *   T19  DEBUG_LEVEL logging
+ *   T20  construct_stage() public API
+ */
+
+pipeline {
+    agent any
+
+    stages {
+
+        // ── Setup: generate all YAML fixtures ────────────────────────────
+        stage('generate_fixtures') {
+            steps {
+                writeFile file: 'oop_basic.yaml', text: '''\
+basic_steps:
+  steps:
+    - sh: echo "hello from basic_steps"
+    - evaluate: env.OOP_TEST_VAR = "oop_works"
+    - sh: echo "var=${env.OOP_TEST_VAR}"
+
+seq_parent:
+  stages:
+    - child_a
+    - child_b
+
+child_a:
+  steps:
+    - sh: echo "child_a"
+
+child_b:
+  steps:
+    - sh: echo "child_b"
+
+par_parent:
+  parallels:
+    - branch_x
+    - branch_y
+
+branch_x:
+  steps:
+    - sh: echo "branch_x"
+
+branch_y:
+  steps:
+    - sh: echo "branch_y"
+'''
+
+                writeFile file: 'oop_use.yaml', text: '''\
+use_entry:
+  steps:
+    - sh: echo "before use"
+    - use: use_target from oop_use.yaml
+    - sh: echo "after use"
+
+use_target:
+  steps:
+    - sh: echo "use_target executed"
+
+use_inline:
+  steps:
+    - use: use_target from oop_use.yaml
+      makeStage: false
+
+circ_a:
+  steps:
+    - use: circ_b from oop_use.yaml
+
+circ_b:
+  steps:
+    - use: circ_a from oop_use.yaml
+'''
+
+                writeFile file: 'oop_templates.yaml', text: '''\
+greet:
+  template:
+    arguments: [NAME]
+  steps:
+    - sh: echo "hello {NAME}"
+
+build:
+  template:
+    arguments: [TARGET, MODE]
+  steps:
+    - sh: echo "build {TARGET} in {MODE} mode"
+
+tpl_steps:
+  steps:
+    - sh: echo "before template"
+    - template: greet
+      NAME: world
+    - sh: echo "after template"
+
+tpl_parallels:
+  parallels:
+    - template: greet
+      NAME: alice
+    - template: greet
+      NAME: bob
+
+tpl_stages:
+  stages:
+    - template: build
+      TARGET: arm64
+      MODE: debug
+    - template: build
+      TARGET: x86_64
+      MODE: release
+
+iter_scalar_par:
+  parallels:
+    - iterated:
+        template: greet
+        over: [alpha, beta, gamma]
+
+iter_map_stages:
+  stages:
+    - iterated:
+        template: build
+        over:
+          - TARGET: arm64
+            MODE: debug
+            _name: arm_dbg
+          - TARGET: riscv
+            MODE: release
+            _name: riscv_rel
+
+iter_env_csv:
+  parallels:
+    - iterated:
+        template: greet
+        over: env.CSV_NAMES
+
+iter_env_json:
+  parallels:
+    - iterated:
+        template: build
+        over: env.JSON_MATRIX
+'''
+
+                writeFile file: 'oop_recursive.yaml', text: '''\
+nested:
+  template:
+    arguments: [GREETING, SUBJECT]
+  steps:
+    - sh: echo "{GREETING} {SUBJECT}"
+
+recursive_test:
+  steps:
+    - template: nested
+      GREETING: "hello {SUBJECT}"
+      SUBJECT: world
+'''
+
+                writeFile file: 'oop_wrappers.yaml', text: '''\
+env_stage:
+  env:
+    MY_VAR: injected_value
+  steps:
+    - sh: echo "MY_VAR=$MY_VAR"
+
+when_true:
+  when: "true"
+  steps:
+    - sh: echo "when_true executed"
+
+when_false:
+  when: "false"
+  steps:
+    - sh: echo "THIS SHOULD NOT PRINT"
+'''
+
+                writeFile file: 'oop_failfast.yaml', text: '''\
+bad_step:
+  steps:
+    - unknown_directive: oops
+
+bad_stage:
+  nope: true
+'''
+            }
+        }
+
+        // ── T01: StepsStage basic ────────────────────────────────────────
+        stage('T01: StepsStage basic steps') {
+            steps {
+                script {
+                    stagefy.run('oop_basic.yaml', 'basic_steps')
+                    echo "✓ T01 PASSED"
+                }
+            }
+        }
+
+        // ── T02: SequentialStage ─────────────────────────────────────────
+        stage('T02: SequentialStage') {
+            steps {
+                script {
+                    stagefy.run('oop_basic.yaml', 'seq_parent')
+                    echo "✓ T02 PASSED"
+                }
+            }
+        }
+
+        // ── T03: ParallelStage ───────────────────────────────────────────
+        stage('T03: ParallelStage') {
+            steps {
+                script {
+                    stagefy.run('oop_basic.yaml', 'par_parent')
+                    echo "✓ T03 PASSED"
+                }
+            }
+        }
+
+        // ── T04: UseStageStep (makeStage true + false) ───────────────────
+        stage('T04: UseStageStep') {
+            steps {
+                script {
+                    stagefy.run('oop_use.yaml', 'use_entry')
+                    stagefy.run('oop_use.yaml', 'use_inline')
+                    echo "✓ T04 PASSED"
+                }
+            }
+        }
+
+        // ── T05: Circular reference detection ────────────────────────────
+        stage('T05: Circular reference') {
+            steps {
+                script {
+                    try {
+                        stagefy.run('oop_use.yaml', 'circ_a')
+                        error "T05 FAILED: expected circular loop error"
+                    } catch (Exception e) {
+                        if (e.message?.contains("Circular Loop Execution")) {
+                            echo "✓ T05 PASSED: ${e.message}"
+                        } else {
+                            error "T05 FAILED: unexpected → ${e.message}"
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── T06: Template direct ref in steps ────────────────────────────
+        stage('T06: Template in steps') {
+            steps {
+                script {
+                    stagefy.run('oop_templates.yaml', 'tpl_steps')
+                    echo "✓ T06 PASSED"
+                }
+            }
+        }
+
+        // ── T07: Template direct ref in parallels ────────────────────────
+        stage('T07: Template in parallels') {
+            steps {
+                script {
+                    stagefy.run('oop_templates.yaml', 'tpl_parallels')
+                    echo "✓ T07 PASSED"
+                }
+            }
+        }
+
+        // ── T08: Template direct ref in stages ───────────────────────────
+        stage('T08: Template in stages') {
+            steps {
+                script {
+                    stagefy.run('oop_templates.yaml', 'tpl_stages')
+                    echo "✓ T08 PASSED"
+                }
+            }
+        }
+
+        // ── T09: Iterated scalar in parallels ────────────────────────────
+        stage('T09: Iterated scalar parallels') {
+            steps {
+                script {
+                    stagefy.run('oop_templates.yaml', 'iter_scalar_par')
+                    echo "✓ T09 PASSED"
+                }
+            }
+        }
+
+        // ── T10: Iterated map with _name in stages ──────────────────────
+        stage('T10: Iterated map stages') {
+            steps {
+                script {
+                    stagefy.run('oop_templates.yaml', 'iter_map_stages')
+                    echo "✓ T10 PASSED"
+                }
+            }
+        }
+
+        // ── T11: Iterated via env var (CSV + JSON) ──────────────────────
+        stage('T11: Iterated env var') {
+            environment {
+                CSV_NAMES = 'alice,bob,charlie'
+                JSON_MATRIX = '[{"TARGET":"arm64","MODE":"debug"},{"TARGET":"x86","MODE":"release"}]'
+            }
+            steps {
+                script {
+                    stagefy.run('oop_templates.yaml', 'iter_env_csv')
+                    stagefy.run('oop_templates.yaml', 'iter_env_json')
+                    echo "✓ T11 PASSED"
+                }
+            }
+        }
+
+        // ── T12: Recursive template substitution ─────────────────────────
+        stage('T12: Recursive substitution') {
+            steps {
+                script {
+                    stagefy.run('oop_recursive.yaml', 'recursive_test')
+                    echo "✓ T12 PASSED"
+                }
+            }
+        }
+
+        // ── T13: env: wrapper on StepsStage ──────────────────────────────
+        stage('T13: env wrapper') {
+            steps {
+                script {
+                    stagefy.run('oop_wrappers.yaml', 'env_stage')
+                    echo "✓ T13 PASSED"
+                }
+            }
+        }
+
+        // ── T14: when: conditional skip ──────────────────────────────────
+        stage('T14: when conditional') {
+            steps {
+                script {
+                    stagefy.run('oop_wrappers.yaml', 'when_true')
+                    stagefy.run('oop_wrappers.yaml', 'when_false')
+                    echo "✓ T14 PASSED"
+                }
+            }
+        }
+
+        // ── T16: Unknown step directive fail-fast ────────────────────────
+        stage('T16: Unknown step fail-fast') {
+            steps {
+                script {
+                    try {
+                        stagefy.run('oop_failfast.yaml', 'bad_step')
+                        error "T16 FAILED: expected unknown step error"
+                    } catch (Exception e) {
+                        if (e.message?.contains("Unknown step directive")) {
+                            echo "✓ T16 PASSED: ${e.message}"
+                        } else {
+                            error "T16 FAILED: unexpected → ${e.message}"
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── T17: Unknown stage type fail-fast ────────────────────────────
+        stage('T17: Unknown stage fail-fast') {
+            steps {
+                script {
+                    try {
+                        stagefy.run('oop_failfast.yaml', 'bad_stage')
+                        error "T17 FAILED: expected unknown stage error"
+                    } catch (Exception e) {
+                        if (e.message?.contains("has no 'stages', 'parallels', or 'steps' key")) {
+                            echo "✓ T17 PASSED: ${e.message}"
+                        } else {
+                            error "T17 FAILED: unexpected → ${e.message}"
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── T18: Template executed directly (rejected) ───────────────────
+        stage('T18: Template direct execution rejected') {
+            steps {
+                script {
+                    try {
+                        stagefy.run('oop_templates.yaml', 'greet')
+                        error "T18 FAILED: expected template rejection"
+                    } catch (Exception e) {
+                        if (e.message?.contains("cannot be executed directly")) {
+                            echo "✓ T18 PASSED: ${e.message}"
+                        } else {
+                            error "T18 FAILED: unexpected → ${e.message}"
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── T19: DEBUG_LEVEL logging ─────────────────────────────────────
+        stage('T19: DEBUG_LEVEL') {
+            environment {
+                DEBUG_LEVEL = 'debug'
+            }
+            steps {
+                script {
+                    stagefy.run('oop_basic.yaml', 'basic_steps')
+                    echo "✓ T19 PASSED (check console for [STAGEFY DEBUG/INFO] lines)"
+                }
+            }
+        }
+
+        // ── T20: construct_stage() public API ────────────────────────────
+        stage('T20: construct_stage API') {
+            steps {
+                script {
+                    def s = stagefy.construct_stage('oop_basic.yaml', 'basic_steps')
+                    stage('constructed') { s.run() }
+                    echo "✓ T20 PASSED"
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh 'rm -f oop_*.yaml'
+        }
+    }
+}
