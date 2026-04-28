@@ -63,16 +63,22 @@ class JenkinsContext implements Serializable {
 /** Resolves ${env.VAR} patterns in text. */
 class EnvResolver implements Serializable {
   @NonCPS
-  static String resolve(String text, def jenkins) {
-    def pattern = /\$\{\s*env\.[a-zA-Z_\.]*\s*\}*/
-    def envList = [:]
-    for (eachEnv in text.findAll(pattern)) {
-      def temp = eachEnv.split("env.")[-1].replace("}", "").trim()
-      envList[eachEnv] = jenkins.getEnv(temp)
+  static List extractEnvKeys(String text) {
+    def pattern = /\$\{\s*env\.([a-zA-Z_\.]*)\s*\}*/
+    def keys = []
+    def matcher = (text =~ pattern)
+    for (int i = 0; i < matcher.count; i++) {
+      keys.add([full: matcher[i][0], key: matcher[i][1]])
     }
+    return keys
+  }
+
+  @NonCPS
+  static String substitute(String text, List envEntries, Map envValues) {
     def result = text
-    for (eachKey in envList.keySet()) {
-      result = result.replace(eachKey, envList[eachKey])
+    for (entry in envEntries) {
+      def val = envValues[entry.key]
+      if (val != null) result = result.replace(entry.full, val.toString())
     }
     return result
   }
@@ -569,7 +575,11 @@ abstract class Step implements Serializable {
 class ShStep extends Step {
   ShStep(Map raw, JenkinsContext jenkins, Stage stage, String moduleprefix) { super(raw, jenkins, stage, moduleprefix) }
   def run() {
-    def cmd = EnvResolver.resolve(raw['sh'], jenkins)
+    def text = raw['sh']
+    def envKeys = EnvResolver.extractEnvKeys(text)
+    def envValues = [:]
+    for (entry in envKeys) { envValues[entry.key] = jenkins.getEnv(entry.key) }
+    def cmd = EnvResolver.substitute(text, envKeys, envValues)
     jenkins.sh("${moduleprefix}${cmd}")
   }
 }
