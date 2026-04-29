@@ -1,163 +1,117 @@
 # Stagefy
 
-A staging environment management and deployment tool for infrastructure automation.
+YAML 기반 Jenkins 파이프라인 스테이지 로더. Jenkinsfile의 반복적인 stage/steps 보일러플레이트를 YAML 선언으로 대체한다.
 
-## Overview
+## 구조
 
-Stagefy is designed to streamline the process of creating, managing, and deploying staging environments. It provides a unified interface for infrastructure teams to quickly spin up isolated environments for testing, development, and quality assurance.
-
-## Features
-
-- **Environment Provisioning**: Quickly create isolated staging environments
-- **Infrastructure as Code**: Declarative configuration for reproducible environments
-- **Multi-Cloud Support**: Deploy across different cloud providers
-- **Environment Lifecycle Management**: Automatic cleanup and resource optimization
-- **Integration Ready**: Works with existing CI/CD pipelines
-- **Resource Monitoring**: Track usage and costs across staging environments
-
-## Quick Start
-
-### Prerequisites
-
-- Access to cloud provider credentials
-- Infrastructure provisioning tools (Terraform, CloudFormation, etc.)
-- Container runtime (Docker)
-
-### Basic Usage
-
-```bash
-# Clone the repository
-git clone http://192.128.1.103:8989/infra/stagefy.git
-cd stagefy
-
-# Configure your environment
-cp config/example.yml config/staging.yml
-# Edit config/staging.yml with your settings
-
-# Deploy a staging environment
-stagefy deploy --config config/staging.yml --environment dev-feature-123
-
-# List active environments
-stagefy list
-
-# Cleanup environment
-stagefy destroy --environment dev-feature-123
+```
+vars/stagefy.groovy   # Jenkins Shared Library (레거시, standalone)
+plugin/               # Jenkins Plugin (hpi) — 권장
+examples/             # Jenkinsfile 및 YAML 예제
 ```
 
-## Configuration
+## 핵심 기능
 
-Stagefy uses YAML configuration files to define environment specifications:
+- **YAML 기반 스테이지 정의** — `sh`, `script`, `evaluate`, `setEnvFromFile` 등의 스텝을 YAML로 선언
+- **OOP 아키텍처** — StepsStage / SequentialStage / ParallelStage 계층 구조
+- **템플릿 시스템** — `template` + `arguments`로 재사용 가능한 스텝 세트 정의, `iterated`로 반복 실행
+- **병렬 실행** — `parallels` 키로 병렬 스테이지 선언, iterated 템플릿과 조합 가능
+- **use 디렉티브** — 외부 YAML 파일의 스테이지를 참조하여 DAG 구성
+- **환경 변수 치환** — `${env.VAR}` 구문으로 런타임 변수 주입
+
+## 빠른 시작
+
+### Plugin 방식 (권장)
+
+```groovy
+// Jenkinsfile
+pipeline {
+    agent any
+    stages {
+        stage('Build') {
+            steps {
+                script {
+                    stagefy.run('Jenkins.yml', 'build')
+                }
+            }
+        }
+    }
+}
+```
 
 ```yaml
-# config/staging.yml
-environment:
-  name: "staging-template"
-  provider: "aws"
-  region: "us-west-2"
-  
-resources:
-  - type: "compute"
-    instance_type: "t3.medium"
-    count: 2
-  - type: "database"
-    engine: "postgresql"
-    version: "13"
-    
-networking:
-  vpc_cidr: "10.0.0.0/16"
-  subnets:
-    - "10.0.1.0/24"
-    - "10.0.2.0/24"
+# Jenkins.yml
+build:
+  steps:
+    - sh: "make build"
+    - sh: "make test"
 ```
 
-## Architecture
+### Shared Library 방식 (레거시)
 
-Stagefy follows a modular architecture:
+Jenkins 관리 > Global Pipeline Libraries에 이 저장소를 등록한 뒤:
 
-- **Core Engine**: Handles environment lifecycle management
-- **Provider Modules**: Cloud-specific implementation (AWS, Azure, GCP)
-- **Configuration Manager**: Validates and processes environment definitions
-- **State Manager**: Tracks environment state and metadata
-- **CLI Interface**: Command-line tools for user interaction
+```groovy
+@Library('stagefy') _
+stagefy('Jenkins.yml', 'build')
+```
 
-## Contributing
+## YAML 스키마 예시
 
-We welcome contributions to Stagefy! Please follow these guidelines:
+```yaml
+# 환경 변수
+env:
+  APP_NAME: myapp
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+# 순차 스테이지
+build:
+  steps:
+    - sh: "echo building ${env.APP_NAME}"
 
-### Development Setup
+# 병렬 스테이지
+test:
+  parallels:
+    - unit_test
+    - integration_test
+
+# 템플릿 + 반복
+compile_target:
+  template:
+    arguments: [TARGET]
+  steps:
+    - sh: "make build TARGET={TARGET}"
+
+compile_all:
+  parallels:
+    - iterated:
+        template: compile_target
+        over: env.COMPILE_TARGETS
+```
+
+## Plugin 빌드 및 설치
 
 ```bash
-# Install development dependencies
-make dev-setup
-
-# Run tests
-make test
-
-# Build the application
-make build
-
-# Run linting
-make lint
+cd plugin
+mvn clean package -DskipTests
+# target/stagefy.hpi 생성
 ```
 
-## Documentation
+자세한 내용은 [plugin/README.md](plugin/README.md) 참조.
 
-- [Installation Guide](docs/installation.md)
-- [Configuration Reference](docs/configuration.md)
-- [API Documentation](docs/api.md)
-- [Provider Setup](docs/providers.md)
-- [Troubleshooting](docs/troubleshooting.md)
+## 요구 사항
 
-## Support
+| 항목 | 버전 |
+|------|------|
+| Jenkins | 2.440.3+ |
+| Java | 21 |
+| 필수 플러그인 | workflow-aggregator, pipeline-utility-steps |
 
-- **Issues**: Report bugs and feature requests on [GitLab Issues](http://192.128.1.103:8989/infra/stagefy/-/issues)
-- **Documentation**: Check our [wiki](http://192.128.1.103:8989/infra/stagefy/-/wikis/home) for detailed guides
-- **Community**: Join our team chat for discussions and support
+## 문서
 
-## Roadmap
+- [Plugin README](plugin/README.md)
+- [설치 가이드](plugin/install.md)
+- [배포 가이드](plugin/deploy.md)
 
-### Current Version (v1.0)
-- [x] Basic environment provisioning
-- [x] AWS provider support
-- [x] CLI interface
+## 라이선스
 
-### Upcoming Features
-- [ ] Azure and GCP provider support
-- [ ] Web-based management interface
-- [ ] Advanced networking configurations
-- [ ] Environment templating system
-- [ ] Integration with monitoring tools
-- [ ] Cost optimization features
-
-## Security
-
-- All cloud credentials are encrypted at rest
-- Environment isolation through network segmentation
-- Role-based access control for team collaboration
-- Audit logging for all environment operations
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Authors
-
-- Infrastructure Team - Initial development and maintenance
-
-## Acknowledgments
-
-- Thanks to the DevOps community for inspiration and best practices
-- Built with modern infrastructure automation tools
-- Designed for scalability and reliability
-
----
-
-**Project Status**: Active development - regularly maintained and updated
-
-For the latest updates and releases, check the [project repository](http://192.128.1.103:8989/infra/stagefy).
+MIT
